@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub struct OpenAIGPT {
+    base_url: String,
     api_key: String,
     model: String,
     client: reqwest::Client,
@@ -59,8 +60,9 @@ struct CleanedTextResponse {
 }
 
 impl OpenAIGPT {
-    pub fn with_client(api_key: String, model: String, client: reqwest::Client) -> Self {
+    pub fn with_client(api_key: String, model: String, client: reqwest::Client, base_url: String) -> Self {
         Self {
+            base_url,
             api_key,
             model,
             client,
@@ -109,7 +111,7 @@ impl LLMProcessor for OpenAIGPT {
 
         let response = self
             .client
-            .post("https://api.openai.com/v1/chat/completions")
+            .post(format!("{}/chat/completions", self.base_url.trim_end_matches('/')))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&request)
             .timeout(std::time::Duration::from_secs(60))

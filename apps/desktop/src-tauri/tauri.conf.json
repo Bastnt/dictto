@@ -27,7 +27,7 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
@@ -47,9 +47,7 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE3RkQ4RTYwQzMzNTdFOUMKUldTY2ZqWERZSTc5RjFGY1VaM2psVms5UmtZS3htdE9nQjVUTkQzakhYa2hScnRpNFNKZmlkOUoK",
-      "endpoints": [
-        "https://github.com/dictto-app/dictto/releases/latest/download/latest.json"
-      ]
+      "endpoints": []
     }
   }
 }

@@ -248,6 +248,8 @@ export function SettingsPage() {
         )}
         {activeTab === "api" && (
           <ApiTab
+            settings={settings}
+            onSave={saveSetting}
             hasApiKey={hasApiKey}
             apiKeyHint={apiKeyHint}
             onSaveApiKey={saveApiKey}

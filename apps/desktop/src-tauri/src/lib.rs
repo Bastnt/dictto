@@ -53,6 +53,7 @@ pub fn run() {
             commands::settings::has_api_key,
             commands::settings::remove_api_key,
             commands::settings::get_api_key_hint,
+            services::hotkey::set_hotkey_capture,
             commands::window::update_pill_hitbox,
             commands::window::clear_pill_hitbox,
         ])

@@ -8,6 +8,18 @@ use super::llm::{LLMProcessor, ProcessingContext};
 use super::transcription::openai_api::OpenAIWhisper;
 use super::transcription::{TranscriptionConfig, TranscriptionEngine};
 
+async fn cleanup_transcript(raw_text: &str, enabled: bool, processor: &impl LLMProcessor,
+    context: &ProcessingContext) -> String {
+    if !enabled { return raw_text.to_string(); }
+    match processor.process(raw_text, context).await {
+        Ok(text) => text,
+        Err(error) => {
+            log::warn!("Cleanup failed: {}, using raw transcript", error);
+            raw_text.to_string()
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
     #[error("No API key configured")]
@@ -39,7 +51,7 @@ pub async fn run_pipeline(
 
     // 2. Get settings + shared HTTP client
     let t = Instant::now();
-    let (languages, paste_delay_ms, llm_model, http_client) = {
+    let (languages, paste_delay_ms, llm_model, http_client, base_url, transcription_model, cleanup_enabled) = {
         let state = app.state::<crate::AppState>();
         let db = state.db.lock().unwrap();
 
@@ -62,8 +74,13 @@ pub async fn run_pipeline(
         let model = db
             .get_setting("llm_model")
             .unwrap_or_else(|| "gpt-4.1-nano".to_string());
+        let base_url = db.get_setting("api_base_url")
+            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        let transcription_model = db.get_setting("transcription_model")
+            .unwrap_or_else(|| "gpt-4o-mini-transcribe".to_string());
         let client = state.http_client.clone();
-        (languages, paste_delay, model, client)
+        let cleanup_enabled = db.get_setting("cleanup_enabled").as_deref() != Some("false");
+        (languages, paste_delay, model, client, base_url, transcription_model, cleanup_enabled)
     };
     log::info!(
         "[pipeline] Settings loaded in {:?} (languages={:?}, model={})",
@@ -74,7 +91,7 @@ pub async fn run_pipeline(
 
     // 3. Transcribe audio
     let t = Instant::now();
-    let whisper = OpenAIWhisper::with_client(api_key.clone(), http_client.clone());
+    let whisper = OpenAIWhisper::with_client(api_key.clone(), http_client.clone(), base_url.clone(), transcription_model);
     let config = TranscriptionConfig {
         // PIPE-01: 1 real language -> send code; PIPE-02: 2+ OR ["auto"] sentinel -> None (auto-detect)
         language: if languages.len() == 1 && languages[0] != "auto" {
@@ -107,29 +124,13 @@ pub async fn run_pipeline(
 
     // 4. Clean with LLM (fallback to raw text on failure)
     let t = Instant::now();
-    let gpt = OpenAIGPT::with_client(api_key, llm_model, http_client);
+    let gpt = OpenAIGPT::with_client(api_key, llm_model, http_client, base_url);
     let context = ProcessingContext {
         languages: languages.clone(),
     };
 
-    let cleaned_text = match gpt.process(&raw_text, &context).await {
-        Ok(cleaned) => {
-            log::info!(
-                "[pipeline] LLM cleanup done in {:?} ({} chars)",
-                t.elapsed(),
-                cleaned.len()
-            );
-            cleaned
-        }
-        Err(e) => {
-            log::warn!(
-                "[pipeline] LLM failed in {:?}: {}, using raw text",
-                t.elapsed(),
-                e
-            );
-            raw_text.clone()
-        }
-    };
+    let cleaned_text = cleanup_transcript(&raw_text, cleanup_enabled, &gpt, &context).await;
+    log::info!("[pipeline] Cleanup stage completed in {:?} (enabled={})", t.elapsed(), cleanup_enabled);
 
     // 5. Inject text
     let t = Instant::now();
@@ -158,6 +159,19 @@ pub async fn run_pipeline(
 
 #[cfg(test)]
 mod tests {
+    struct UnexpectedCleanup;
+    #[async_trait::async_trait]
+    impl super::LLMProcessor for UnexpectedCleanup {
+        async fn process(&self, _: &str, _: &super::ProcessingContext) -> Result<String, crate::services::llm::LLMError> {
+            panic!("disabled cleanup must never call the processor");
+        }
+    }
+    #[tokio::test]
+    async fn disabled_cleanup_preserves_raw_text_without_calling_model() {
+        let text = super::cleanup_transcript("euh bonjour", false, &UnexpectedCleanup,
+            &super::ProcessingContext { languages: vec!["fr".into()] }).await;
+        assert_eq!(text, "euh bonjour");
+    }
     // PIPE-01 + sentinel: ["auto"] must produce None, not Some("auto")
     #[test]
     fn test_auto_sentinel_produces_none() {

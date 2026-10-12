@@ -16,10 +16,14 @@ pub fn set_setting(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let hotkey = if key == "hotkey" {
+        Some(crate::services::hotkey::chord::Chord::parse(&value)?)
+    } else { None };
     {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         db.set_setting(&key, &value).map_err(|e| e.to_string())?;
     } // db lock released here
+    if let Some(chord) = hotkey { crate::services::hotkey::configure(chord); }
 
     // Handle auto-start toggle
     if key == "auto_start" {

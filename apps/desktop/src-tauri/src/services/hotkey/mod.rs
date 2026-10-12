@@ -4,11 +4,34 @@ use tauri::Emitter;
 use tauri::Manager;
 use crate::services::audio::device_monitor::DeviceSelection;
 use crate::services::sound::{play_sound, Sound};
+pub mod chord;
+static TRACKER: OnceLock<Mutex<chord::Tracker>> = OnceLock::new();
+
+fn tracker() -> &'static Mutex<chord::Tracker> {
+    TRACKER.get_or_init(|| Mutex::new(chord::Tracker::default()))
+}
+
+fn send_transition(transition: Option<bool>) {
+    if let (Some(pressed), Some(tx)) = (transition, HOTKEY_TX.get()) {
+        let _ = tx.send(if pressed { HotkeyEvent::Pressed } else { HotkeyEvent::Released });
+    }
+}
+
+pub fn configure(value: chord::Chord) {
+    let mut tracker = tracker().lock().unwrap();
+    send_transition(tracker.reset());
+    tracker.chord = value;
+}
+
+#[tauri::command]
+pub fn set_hotkey_capture(active: bool) {
+    let mut tracker = tracker().lock().unwrap();
+    send_transition(tracker.reset());
+    tracker.suspended = active;
+}
 
 #[cfg(windows)]
 use windows::Win32::Foundation::LRESULT;
-#[cfg(windows)]
-use windows::Win32::UI::Input::KeyboardAndMouse::{VK_LCONTROL, VK_LWIN, VK_RCONTROL, VK_RWIN};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, SetWindowsHookExW, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
@@ -34,12 +57,9 @@ enum BarAction {
 static HOTKEY_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<HotkeyEvent>> = OnceLock::new();
 
 // Key state tracking (used by the hook proc — called sequentially, no races)
-static CTRL_DOWN: AtomicBool = AtomicBool::new(false);
-static LWIN_DOWN: AtomicBool = AtomicBool::new(false);
-static COMBO_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Low-level keyboard hook procedure.
-/// Tracks Ctrl + Win state and sends Pressed/Released events via channel.
+/// Tracks the configured chord and sends press/release transitions.
 #[cfg(windows)]
 unsafe extern "system" fn hook_proc(
     code: i32,
@@ -54,27 +74,7 @@ unsafe extern "system" fn hook_proc(
         let is_up = wparam.0 == WM_KEYUP as usize || wparam.0 == WM_SYSKEYUP as usize;
 
         if is_down || is_up {
-            let pressed = is_down;
-
-            if vk == VK_LCONTROL.0 || vk == VK_RCONTROL.0 {
-                CTRL_DOWN.store(pressed, Ordering::SeqCst);
-            } else if vk == VK_LWIN.0 || vk == VK_RWIN.0 {
-                LWIN_DOWN.store(pressed, Ordering::SeqCst);
-            }
-
-            // Detect combo transitions
-            let both = CTRL_DOWN.load(Ordering::SeqCst) && LWIN_DOWN.load(Ordering::SeqCst);
-            let was_active = COMBO_ACTIVE.swap(both, Ordering::SeqCst);
-
-            if both && !was_active {
-                if let Some(tx) = HOTKEY_TX.get() {
-                    let _ = tx.send(HotkeyEvent::Pressed);
-                }
-            } else if !both && was_active {
-                if let Some(tx) = HOTKEY_TX.get() {
-                    let _ = tx.send(HotkeyEvent::Released);
-                }
-            }
+            send_transition(tracker().lock().unwrap().event(vk, is_down));
         }
     }
 
@@ -241,6 +241,9 @@ const TAP_MAX_DURATION: std::time::Duration = std::time::Duration::from_millis(2
 const DOUBLE_TAP_WINDOW: std::time::Duration = std::time::Duration::from_millis(300);
 
 pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let state = app.state::<crate::AppState>();
+    let value = state.db.lock().unwrap().get_setting("hotkey").unwrap_or_else(|| "Ctrl+Win".into());
+    configure(chord::Chord::parse(&value).unwrap_or_else(|_| chord::Chord::parse("Ctrl+Win").unwrap()));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HotkeyEvent>();
 
     HOTKEY_TX

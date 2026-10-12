@@ -53,7 +53,8 @@ The entire flow takes about 1–2 seconds after you stop speaking. Audio is neve
 ## Features
 
 - **Push-to-talk** — `Ctrl + Win` hotkey. Speak only when you want. No always-on microphone.
-- **AI text cleanup** — GPT removes "um", "uh", "like", fixes grammar, and formats your text naturally.
+- **Custom API** — Configure an OpenAI-compatible endpoint and model IDs. [Setup guide](CUSTOM-API.md).
+- **Optional text cleanup** — Remove filler words, fix grammar, and format text, or disable cleanup to paste the original transcript.
 - **102 languages** — Supports all languages available in OpenAI Whisper, including mixed-language dictation (Spanglish, Franglais, etc.).
 - **Lightweight** — ~5 MB installer. Built with Tauri + Rust, not Electron. Minimal CPU and memory usage.
 - **Smart clipboard** — Saves your clipboard before pasting, restores it after. Your clipboard history stays intact.
@@ -71,7 +72,7 @@ Download the latest installer from **[GitHub Releases](https://github.com/dictto
 
 1. Run `Dictto_x64-setup.exe`
 2. Open Dictto from the system tray (bottom-right of your taskbar)
-3. Go to **Settings → API** and enter your [OpenAI API key](https://platform.openai.com/api-keys)
+3. Go to **Settings → API** and enter your API key. Keep the default OpenAI endpoint or configure your own [OpenAI-compatible API](CUSTOM-API.md).
 4. Hold `Ctrl + Win` and start talking
 
 ### Windows SmartScreen

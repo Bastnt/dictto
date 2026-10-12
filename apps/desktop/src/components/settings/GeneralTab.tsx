@@ -1,4 +1,4 @@
-import { ComingSoon } from "./ComingSoon";
+import { HotkeySetting } from "./HotkeySetting";
 import { LANGUAGES, Language } from "../../data/languages";
 import { FlagIcon } from "./FlagIcon";
 
@@ -108,18 +108,7 @@ export function GeneralTab({ settings, onSave, onOpenLanguageModal }: Props) {
         </div>
       </div>
 
-      {/* Push-to-talk hotkey — Coming Soon */}
-      <ComingSoon>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-text-secondary">Push-to-talk hotkey</p>
-            <p className="text-xs text-text-tertiary">Currently: Ctrl+Win</p>
-          </div>
-          <button className="px-3 py-1.5 bg-surface-elevated border border-border-strong rounded-sm text-xs font-medium text-text-secondary">
-            Change
-          </button>
-        </div>
-      </ComingSoon>
+      <HotkeySetting value={settings.hotkey || "Ctrl+Win"} onSave={(value) => onSave("hotkey", value)} />
     </div>
   );
 }

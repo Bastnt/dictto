@@ -5,6 +5,8 @@ use std::time::Duration;
 use super::{TranscriptionConfig, TranscriptionEngine, TranscriptionError, TranscriptionResult};
 
 pub struct OpenAIWhisper {
+    base_url: String,
+    model: String,
     api_key: String,
     client: reqwest::Client,
 }
@@ -15,8 +17,8 @@ struct WhisperResponse {
 }
 
 impl OpenAIWhisper {
-    pub fn with_client(api_key: String, client: reqwest::Client) -> Self {
-        Self { api_key, client }
+    pub fn with_client(api_key: String, client: reqwest::Client, base_url: String, model: String) -> Self {
+        Self { api_key, client, base_url, model }
     }
 }
 
@@ -40,7 +42,7 @@ impl TranscriptionEngine for OpenAIWhisper {
                 .map_err(|e| TranscriptionError::HttpError(e.to_string()))?;
 
             let mut form = multipart::Form::new()
-                .text("model", "gpt-4o-mini-transcribe")
+                .text("model", self.model.clone())
                 .part("file", file_part);
 
             if let Some(ref lang) = config.language {
@@ -53,7 +55,7 @@ impl TranscriptionEngine for OpenAIWhisper {
 
             let response = self
                 .client
-                .post("https://api.openai.com/v1/audio/transcriptions")
+                .post(format!("{}/audio/transcriptions", self.base_url.trim_end_matches('/')))
                 .header("Authorization", format!("Bearer {}", self.api_key))
                 .multipart(form)
                 .timeout(TRANSCRIPTION_TIMEOUT)
