@@ -1,5 +1,6 @@
 import { act, render } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
+import capability from "../../../../src-tauri/capabilities/recording-overlay.json";
 const state = vi.hoisted(() => ({recordingState: "idle", recordingMode: null, error: "",
   win: {show: vi.fn().mockResolvedValue(null), hide: vi.fn().mockResolvedValue(null)}}));
 vi.mock("@tauri-apps/api/window", () => ({getCurrentWindow: () => state.win, currentMonitor: async () => null}));
@@ -10,6 +11,11 @@ vi.mock("../ContinuousControls", () => ({ContinuousControls: () => null}));
 import { RecordingBar } from "../RecordingBar";
 
 beforeEach(() => {state.recordingState = "idle"; state.error = ""; vi.clearAllMocks();});
+it("grants native visibility control only to the overlay", () => {
+  expect(capability.windows).toEqual(["recording-bar"]);
+  expect(capability.permissions).toContain("core:window:allow-show");
+  expect(capability.permissions).toContain("core:window:allow-hide");
+});
 it("hides the native overlay at idle and shows it only while active", async () => {
   const view = render(<RecordingBar barOpacity={0.9} />);
   await act(async () => {});
