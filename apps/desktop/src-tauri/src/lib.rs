@@ -132,6 +132,8 @@ pub fn run() {
                 WebviewUrl::App("/".into()),
             )
             .title("Dictto Recording Bar")
+            .visible(false)
+            .focusable(false)
             .decorations(false)
             .transparent(true)
             .shadow(false)

@@ -8,7 +8,7 @@ pub fn default_settings() -> Vec<(&'static str, &'static str)> {
         ("llm_model", "gpt-4.1-nano"),
         ("cleanup_enabled", "true"),
         ("auto_start", "true"),
-        ("bar_visible_idle", "true"),
+        ("bar_visible_idle", "false"),
         ("bar_opacity", "0.9"),
         ("paste_delay_ms", "150"),
         ("microphone_device", "auto-detect"),

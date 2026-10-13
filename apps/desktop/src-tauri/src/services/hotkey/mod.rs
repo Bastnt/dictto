@@ -171,7 +171,10 @@ fn spawn_pipeline(
     tauri::async_runtime::spawn(async move {
         match crate::services::pipeline::run_pipeline(&app_clone, data).await {
             Ok(_) => {}
-            Err(e) => log::error!("[hotkey] Pipeline error: {}", e),
+            Err(e) => {
+                log::error!("[hotkey] Pipeline error: {}", e);
+                let _ = app_clone.emit("dictation-error", serde_json::json!({"message": e.to_string()}));
+            }
         }
         emit_state(&app_clone, "idle", None);
         pr.store(false, Ordering::SeqCst);

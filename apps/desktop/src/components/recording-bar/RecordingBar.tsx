@@ -7,9 +7,9 @@ import { listen } from "@tauri-apps/api/event";
 import { useRecording } from "../../hooks/useRecording";
 import { ContinuousControls } from "./ContinuousControls";
 import { StatusIndicator } from "./StatusIndicator";
+import { useDictationError } from "../../hooks/useDictationError";
 
 interface RecordingBarProps {
-  barVisibleIdle: boolean;
   barOpacity: number;
 }
 
@@ -32,6 +32,7 @@ const PILL = {
   recordingPTT: { w: 130, h: 42 },
   toggle: { w: 192, h: 42 },
   processing: { w: 130, h: 42 },
+  error: { w: 320, h: 64 },
 } as const;
 
 // Pre-computed tooltip dimensions for the idle hover tooltip.
@@ -66,10 +67,11 @@ type VisualState =
   | "recordingPTT"
   | "toggle"
   | "toggleHover"
-  | "processing";
+  | "processing"
+  | "error";
 
 // Collapse hover variants so window only resizes on group change, not on hover
-type SizeGroup = "hidden" | "idle" | "recordingPTT" | "toggle" | "processing";
+type SizeGroup = "hidden" | "idle" | "recordingPTT" | "toggle" | "processing" | "error";
 
 function toSizeGroup(vs: VisualState): SizeGroup {
   switch (vs) {
@@ -85,6 +87,7 @@ function toSizeGroup(vs: VisualState): SizeGroup {
       return "toggle";
     case "processing":
       return "processing";
+    case "error": return "error";
   }
 }
 
@@ -107,6 +110,7 @@ function getGroupPillSize(group: SizeGroup): { w: number; h: number } {
       return PILL.toggle;
     case "processing":
       return PILL.processing;
+    case "error": return PILL.error;
   }
 }
 
@@ -119,22 +123,24 @@ interface MonitorInfo {
 }
 
 
-export function RecordingBar({ barVisibleIdle, barOpacity }: RecordingBarProps) {
+export function RecordingBar({ barOpacity }: RecordingBarProps) {
   const { recordingState, recordingMode } = useRecording();
+  const errorMessage = useDictationError();
   const [isHovered, setIsHovered] = useState(false);
   const [isToggleHovered, setIsToggleHovered] = useState(false);
   const [monitorInfo, setMonitorInfo] = useState<MonitorInfo | null>(null);
   const measureRef = useRef<HTMLDivElement>(null);
   const lastSizeRef = useRef<{ group: SizeGroup; w: number; h: number } | null>(null);
 
-  const isActive = recordingState !== "idle";
+  const isActive = recordingState !== "idle" || !!errorMessage;
   const isContinuous =
     recordingState === "recording" && recordingMode === "continuous";
-  const showPill = isActive || barVisibleIdle;
+  const showPill = isActive;
 
   // Compute visual state
   const visualState: VisualState = (() => {
     if (!showPill) return "hidden";
+    if (errorMessage) return "error";
     if (recordingState === "processing") return "processing";
     if (recordingState === "recording") {
       if (isContinuous) return isToggleHovered ? "toggleHover" : "toggle";
@@ -142,6 +148,11 @@ export function RecordingBar({ barVisibleIdle, barOpacity }: RecordingBarProps) 
     }
     return isHovered ? "idleHover" : "idle";
   })();
+
+  useEffect(() => {
+    const win = getCurrentWindow();
+    void (showPill ? win.show() : win.hide()).catch(console.error);
+  }, [showPill]);
 
   // Reset hover flags when leaving their relevant state group
   useEffect(() => {
@@ -247,6 +258,7 @@ export function RecordingBar({ barVisibleIdle, barOpacity }: RecordingBarProps) 
         case "toggleHover": return PILL.toggle;
         case "recordingPTT": return PILL.recordingPTT;
         case "processing": return PILL.processing;
+        case "error": return PILL.error;
         default: return PILL.idle;
       }
     })();
@@ -357,12 +369,15 @@ export function RecordingBar({ barVisibleIdle, barOpacity }: RecordingBarProps) 
   if (!showPill) return null;
 
   // --- Pill styles ---
-  const isIdle = recordingState === "idle";
+  const isIdle = recordingState === "idle" && !errorMessage;
   const pillHovered = isIdle ? isHovered : isToggleHovered;
 
   // Determine pill dimensions
   let pillW: number, pillH: number;
-  if (isIdle) {
+  if (errorMessage) {
+    pillW = PILL.error.w;
+    pillH = PILL.error.h;
+  } else if (isIdle) {
     pillW = pillHovered ? PILL.idleHover.w : PILL.idle.w;
     pillH = pillHovered ? PILL.idleHover.h : PILL.idle.h;
   } else if (recordingState === "processing") {
@@ -558,6 +573,9 @@ export function RecordingBar({ barVisibleIdle, barOpacity }: RecordingBarProps) 
         >
           <StatusIndicator />
         </div>
+        {errorMessage && <div role="alert" style={{position: "absolute", inset: 0, display: "flex",
+          alignItems: "center", justifyContent: "center", padding: "8px 18px", fontSize: 12,
+          color: "var(--color-danger)", textAlign: "center"}}>{errorMessage}</div>}
       </div>
       </div>
     </div>

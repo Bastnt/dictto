@@ -31,6 +31,10 @@ Space, Enter, Tab or Backspace. Two or more modifiers alone and standalone F1 th
 also work. Avoid shortcuts reserved by Windows or another application.
 Capture temporarily suspends dictation activation.
 
+The recording overlay is hidden while idle. It appears during recording and processing.
+Request failures display a short error message for 15 seconds or until the next recording,
+then the overlay disappears again.
+
 ## Build and test
 
 ```powershell
