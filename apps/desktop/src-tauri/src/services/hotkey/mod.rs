@@ -234,6 +234,7 @@ fn start_recording(app: &tauri::AppHandle) -> Option<u64> {
     }
     drop(recorder); // explicit drop to release mutex before play_sound acquires db mutex
 
+    crate::services::warmup::schedule(app);
     play_sound(Sound::Start, app);
     Some(limit_secs)
 }

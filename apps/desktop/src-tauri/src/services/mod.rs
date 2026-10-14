@@ -8,6 +8,7 @@ pub mod llm;
 pub mod pipeline;
 pub mod sound;
 pub mod transcription;
+pub mod warmup;
 
 #[cfg(test)]
 mod endpoint_tests;

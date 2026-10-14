@@ -18,27 +18,40 @@ export function ApiTab({
 }: ApiTabProps) {
   return <div className="space-y-6">
     <div className="space-y-3">
-      <label className="flex items-center gap-3 text-sm text-text-secondary">
-        <input type="checkbox" role="switch" aria-label="Text cleanup"
-          checked={settings.cleanup_enabled !== "false"}
-          onChange={(event) => onSave("cleanup_enabled", String(event.target.checked))} />
-        Text cleanup
-      </label>
-      <p className="text-[11px] text-text-tertiary">Turn off to paste the original transcript without an extra model call.</p>
       {([
         ["api_base_url", "API base URL", "https://api.openai.com/v1"],
         ["transcription_model", "Transcription model", "gpt-4o-mini-transcribe"],
         ["llm_model", "Cleanup model", "gpt-4.1-nano"],
-      ] as const).map(([key, label, fallback]) => <label key={key} className="block text-xs text-text-secondary">
-        {label}
-        <input className="mt-1 w-full px-3 py-2 bg-surface border border-border rounded-md text-text"
+      ] as const).map(([key, label, fallback]) => <div key={key} className="space-y-2">
+        <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
+          <label htmlFor={key}>{label}</label>
+          {key === "llm_model" && <label className="flex items-center gap-2 cursor-pointer">
+            <span>Text cleanup</span>
+            <input type="checkbox" role="switch" aria-label="Text cleanup"
+              className="accent-text"
+              checked={settings.cleanup_enabled !== "false"}
+              onChange={(event) => onSave("cleanup_enabled", String(event.target.checked))} />
+          </label>}
+        </div>
+        <input id={key} className="w-full px-3 py-2 bg-surface border border-border rounded-md text-text"
           disabled={key === "llm_model" && settings.cleanup_enabled === "false"}
           key={`${key}:${settings[key]}`} defaultValue={settings[key] || fallback}
           onBlur={(event) => {
             const value = event.target.value.trim();
             if (value && value !== settings[key]) onSave(key, value);
           }} />
-      </label>)}
+        {key === "llm_model" && settings.cleanup_enabled === "false" &&
+          <p className="text-[11px] text-text-tertiary">Original transcript is pasted without an extra model call.</p>}
+        {key === "transcription_model" && <div className="pt-1">
+          <label className="flex items-center justify-between gap-3 text-xs text-text-secondary cursor-pointer">
+            <span>Warm transcription model</span>
+            <input type="checkbox" role="switch" aria-label="Warm transcription model" className="accent-text"
+              checked={settings.transcription_warmup === "true"}
+              onChange={(event) => onSave("transcription_warmup", String(event.target.checked))} />
+          </label>
+          <p className="mt-1 text-[11px] text-text-tertiary">Send one second of silence at startup and recording start. Response discarded; provider charges may apply.</p>
+        </div>}
+      </div>)}
       <p className="text-[11px] text-text-tertiary">Include /v1 in the URL. Both transcription and cleanup use this endpoint.</p>
     </div>
     <ApiKeyEditor {...keyProps} />

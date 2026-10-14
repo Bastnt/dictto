@@ -46,3 +46,5 @@ cargo test --lib
 ```
 
 The fork disables upstream updater endpoints to preserve its custom API features.
+
+Enable **Warm transcription model** to send a silent one-second WAV at app startup and recording start through the configured transcription API. Concurrent warmups are skipped. Recording does not wait, failures are silent, and the response is discarded. Off by default; providers may bill these requests.

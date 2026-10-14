@@ -4,6 +4,15 @@ import userEvent from "@testing-library/user-event";
 import { ApiTab } from "../TranscriptionTab";
 
 describe("API endpoint settings", () => {
+  it("keeps warmup opt-in and saves its switch", async () => {
+    const onSave = vi.fn();
+    render(<ApiTab hasApiKey={true} apiKeyHint="hidden" onSaveApiKey={vi.fn()}
+      onRemoveApiKey={vi.fn()} settings={{}} onSave={onSave} />);
+    const toggle = screen.getByRole("switch", {name: "Warm transcription model"});
+    expect(toggle).not.toBeChecked();
+    await userEvent.click(toggle);
+    expect(onSave).toHaveBeenCalledWith("transcription_warmup", "true");
+  });
   it("disables cleanup without erasing the chosen model", async () => {
     const onSave = vi.fn();
     render(<ApiTab hasApiKey={true} apiKeyHint="hidden" onSaveApiKey={vi.fn()}

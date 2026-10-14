@@ -103,6 +103,7 @@ pub fn run() {
                 recorder.set_app_handle(app.handle().clone());
             }
 
+            services::warmup::schedule(app.handle());
             tray::setup_tray(app)?;
             services::hotkey::register_hotkey(app)?;
 

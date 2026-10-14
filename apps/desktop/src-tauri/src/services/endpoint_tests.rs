@@ -24,7 +24,7 @@ fn endpoint(reply: &'static str) -> (String, std::thread::JoinHandle<String>) {
             }
         }
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", reply.len(), reply).unwrap();
-        String::from_utf8(bytes).unwrap()
+        String::from_utf8_lossy(&bytes).into_owned()
     });
     (base, handle)
 }
@@ -61,4 +61,16 @@ async fn cleanup_uses_custom_endpoint_and_parses_structured_text() {
     let body: serde_json::Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
     assert_eq!(body["model"], "cleanup-model");
     assert_eq!(body["response_format"]["type"], "json_schema");
+}
+
+#[tokio::test]
+async fn warmup_posts_silent_wav_to_selected_model_and_discards_response() {
+    let (base, request) = endpoint("{}");
+    super::warmup::send(&reqwest::Client::new(), &base, "local-whisper", "test-key").await.unwrap();
+    let request = request.join().unwrap();
+    assert!(request.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
+    assert!(request.contains("local-whisper"));
+    assert!(request.contains("RIFF"));
+    assert!(request.contains("WAVE"));
+    assert!(request.to_lowercase().contains("authorization: bearer test-key"));
 }

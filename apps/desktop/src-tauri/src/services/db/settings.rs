@@ -7,6 +7,7 @@ pub fn default_settings() -> Vec<(&'static str, &'static str)> {
         ("transcription_model", "gpt-4o-mini-transcribe"),
         ("llm_model", "gpt-4.1-nano"),
         ("cleanup_enabled", "true"),
+        ("transcription_warmup", "false"),
         ("auto_start", "true"),
         ("bar_visible_idle", "false"),
         ("bar_opacity", "0.9"),
