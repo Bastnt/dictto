@@ -33,6 +33,7 @@ impl TranscriptionEngine for OpenAIWhisper {
         audio_data: &[u8],
         config: &TranscriptionConfig,
     ) -> Result<TranscriptionResult, TranscriptionError> {
+        let mut activity = crate::services::warmup::ACTIVITY.lock().await;
         let mut last_error = TranscriptionError::Timeout;
 
         for attempt in 1..=MAX_ATTEMPTS {
@@ -78,6 +79,7 @@ impl TranscriptionEngine for OpenAIWhisper {
                         .await
                         .map_err(|e| TranscriptionError::ApiError(e.to_string()))?;
 
+                    activity.completed(&self.base_url, &self.model);
                     return Ok(TranscriptionResult {
                         text: whisper_response.text,
                     });

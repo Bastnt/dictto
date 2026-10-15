@@ -74,3 +74,62 @@ async fn warmup_posts_silent_wav_to_selected_model_and_discards_response() {
     assert!(request.contains("WAVE"));
     assert!(request.to_lowercase().contains("authorization: bearer test-key"));
 }
+
+#[tokio::test]
+async fn repeated_warmup_reuses_the_completed_warmup() {
+    let (base, request) = endpoint("{}");
+    let client = reqwest::Client::new();
+    super::warmup::send(&client, &base, "local-whisper", "test-key").await.unwrap();
+    request.join().unwrap();
+    // The endpoint has closed: a redundant POST would fail here.
+    super::warmup::send(&client, &base, "local-whisper", "test-key").await.unwrap();
+}
+
+#[tokio::test]
+async fn warmup_waits_for_response_body_before_releasing_transcription() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (headers_sent, headers_received) = tokio::sync::oneshot::channel();
+    let (release_body, wait_body) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut bytes = Vec::new();
+        let mut buf = [0; 4096];
+        loop {
+            let n = stream.read(&mut buf).unwrap();
+            assert!(n > 0);
+            bytes.extend_from_slice(&buf[..n]);
+            if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                let header = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                let length: usize = header.lines().find_map(|line| line.strip_prefix("content-length:"))
+                    .unwrap().trim().parse().unwrap();
+                if bytes.len() >= end + 4 + length { break; }
+            }
+        }
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n").unwrap();
+        headers_sent.send(()).unwrap();
+        wait_body.recv_timeout(Duration::from_secs(5)).unwrap();
+        stream.write_all(b"{}").unwrap();
+    });
+    let warmup = tokio::spawn(async move {
+        super::warmup::send(&reqwest::Client::new(), &base, "local-whisper", "key").await
+    });
+    headers_received.await.unwrap();
+    let (transcription_base, transcription_request) = endpoint(r#"{"text":"Bonjour"}"#);
+    let transcription = tokio::spawn(async move {
+        let engine = super::transcription::openai_api::OpenAIWhisper::with_client(
+            "key".into(), reqwest::Client::new(), transcription_base, "local-whisper".into());
+        engine.transcribe(b"wav-audio", &TranscriptionConfig { language: None, prompt: None }).await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let finished_before_body = warmup.is_finished();
+    let transcription_overlapped = transcription.is_finished();
+    release_body.send(()).unwrap();
+    warmup.await.unwrap().unwrap();
+    assert_eq!(transcription.await.unwrap().unwrap().text, "Bonjour");
+    transcription_request.join().unwrap();
+    server.join().unwrap();
+    assert!(!finished_before_body, "warmup must consume its complete response");
+    assert!(!transcription_overlapped, "transcription must wait for warmup completion");
+}

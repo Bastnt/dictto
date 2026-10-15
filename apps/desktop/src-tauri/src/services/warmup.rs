@@ -2,6 +2,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::Manager;
 
+pub(super) static ACTIVITY: tokio::sync::Mutex<WarmModels> = tokio::sync::Mutex::const_new(WarmModels { recent: Vec::new() });
+
+pub(super) struct WarmModels {
+    recent: Vec<(String, String, std::time::Instant)>,
+}
+
+impl WarmModels {
+    fn is_warm(&self, base: &str, model: &str) -> bool {
+        self.recent.iter().any(|(b, m, time)| b == base.trim_end_matches('/') && m == model
+            && time.elapsed() < Duration::from_secs(240))
+    }
+
+    pub(super) fn completed(&mut self, base: &str, model: &str) {
+        self.recent.retain(|(b, m, time)| time.elapsed() < Duration::from_secs(240)
+            && !(b == base.trim_end_matches('/') && m == model));
+        self.recent.push((base.trim_end_matches('/').to_owned(), model.to_owned(), std::time::Instant::now()));
+    }
+}
+
 static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 struct Flight;
@@ -23,12 +42,16 @@ fn silent_wav() -> Vec<u8> {
 }
 
 pub(super) async fn send(client: &reqwest::Client, base: &str, model: &str, key: &str) -> Result<(), reqwest::Error> {
+    // Recording warmup and real audio share one flight, including startup warmup.
+    let mut activity = ACTIVITY.lock().await;
+    if activity.is_warm(base, model) { return Ok(()); }
     let file = reqwest::multipart::Part::bytes(silent_wav())
         .file_name("warmup.wav").mime_str("audio/wav").unwrap();
     client.post(format!("{}/audio/transcriptions", base.trim_end_matches('/')))
         .bearer_auth(key)
         .multipart(reqwest::multipart::Form::new().text("model", model.to_owned()).part("file", file))
-        .timeout(Duration::from_secs(120)).send().await?.error_for_status()?;
+        .timeout(Duration::from_secs(120)).send().await?.error_for_status()?.bytes().await?;
+    activity.completed(base, model);
     Ok(())
 }
 
