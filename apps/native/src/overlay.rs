@@ -393,6 +393,7 @@ unsafe fn paint(hwnd: HWND, state: &State) {
             let color = COLORREF((channel << 16) | (channel << 8) | channel);
             let brush = CreateSolidBrush(color);
             let diameter = (4.0 * scale) as i32;
+            let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
             let old_brush = SelectObject(dc, brush.into());
             let _ = Ellipse(
                 dc,
@@ -402,6 +403,7 @@ unsafe fn paint(hwnd: HWND, state: &State) {
                 y + diameter / 2,
             );
             let _ = SelectObject(dc, old_brush);
+            let _ = SelectObject(dc, old_pen);
             let _ = DeleteObject(brush.into());
         }
     } else if !text.is_empty() {

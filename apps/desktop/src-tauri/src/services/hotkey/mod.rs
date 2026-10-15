@@ -1,5 +1,4 @@
 use crate::host as tauri;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::Emitter;
 use tauri::Manager;
@@ -145,41 +144,33 @@ fn stop_recording_sync(app: &tauri::AppHandle) -> Option<Vec<u8>> {
     result
 }
 
-/// Spawn the async pipeline for the given audio data.
-/// If audio_data is None (empty recording), emits idle immediately.
-fn spawn_pipeline(
+fn emit_pending_state(app: &tauri::AppHandle, pending: usize) {
+    emit_state(app, if pending > 0 { "processing" } else { "idle" }, None);
+}
+
+/// Queue every completed recording for serial transcription and clipboard injection.
+fn enqueue_pipeline(
     app: &tauri::AppHandle,
     audio_data: Option<Vec<u8>>,
-    pipeline_running: &Arc<AtomicBool>,
+    pipeline_tx: &tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    pending: &mut usize,
 ) {
     let Some(data) = audio_data else {
-        emit_state(app, "idle", None);
+        emit_pending_state(app, *pending);
         return;
     };
 
-    if pipeline_running
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        log::warn!("[hotkey] Pipeline already running, discarding audio");
-        emit_state(app, "idle", None);
+    if pipeline_tx.send(data).is_err() {
+        log::error!("[hotkey] Pipeline worker stopped; recording could not be queued");
+        let _ = app.emit(
+            "dictation-error",
+            serde_json::json!({"message": "The transcription queue is unavailable."}),
+        );
+        emit_pending_state(app, *pending);
         return;
     }
-
+    *pending += 1;
     emit_state(app, "processing", None);
-    let app_clone = app.clone();
-    let pr = pipeline_running.clone();
-    tauri::async_runtime::spawn(async move {
-        match crate::services::pipeline::run_pipeline(&app_clone, data).await {
-            Ok(_) => {}
-            Err(e) => {
-                log::error!("[hotkey] Pipeline error: {}", e);
-                let _ = app_clone.emit("dictation-error", serde_json::json!({"message": e.to_string()}));
-            }
-        }
-        emit_state(&app_clone, "idle", None);
-        pr.store(false, Ordering::SeqCst);
-    });
 }
 
 /// Cancel recording: stop the audio stream and discard everything.
@@ -192,7 +183,6 @@ fn cancel_recording(app: &tauri::AppHandle) {
     }
     drop(recorder); // release mutex before play_sound acquires db mutex
     play_sound(Sound::Stop, app); // same stop sound for cancel per user decision
-    emit_state(app, "idle", None);
 }
 
 /// Start audio recording with the configured device.
@@ -298,8 +288,25 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
         let mut tap_timer: Option<AsyncJoinHandle> = None;
         // Channel for tap timer expiry notifications
         let (timer_tx, mut timer_rx) = tokio::sync::mpsc::unbounded_channel::<&'static str>();
-        // Guard to prevent double-spawning pipelines
-        let pipeline_running = Arc::new(AtomicBool::new(false));
+        let (pipeline_tx, mut pipeline_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (completed_tx, mut completed_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let pipeline_app = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            while let Some(audio) = pipeline_rx.recv().await {
+                match crate::services::pipeline::run_pipeline(&pipeline_app, audio).await {
+                    Ok(()) => {}
+                    Err(error) => {
+                        log::error!("[hotkey] Pipeline error: {}", error);
+                        let _ = pipeline_app.emit(
+                            "dictation-error",
+                            serde_json::json!({"message": error.to_string()}),
+                        );
+                    }
+                }
+                let _ = completed_tx.send(());
+            }
+        });
+        let mut pending_pipelines = 0usize;
 
         loop {
             tokio::select! {
@@ -345,7 +352,7 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                                 state = State::PendingHold;
                             } else {
                                 // start_recording() failed — stay idle
-                                emit_state(&app_handle, "idle", None);
+                                emit_pending_state(&app_handle, pending_pipelines);
                             }
                         }
                         (State::Idle, HotkeyEvent::Released) => {
@@ -400,7 +407,7 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
 
                             let audio_data = stop_recording_sync(&app_handle);
                             state = State::Idle;
-                            spawn_pipeline(&app_handle, audio_data, &pipeline_running);
+                            enqueue_pipeline(&app_handle, audio_data, &pipeline_tx, &mut pending_pipelines);
                         }
                         (State::HoldRecording, HotkeyEvent::Pressed) => {
                             // Shouldn't happen (already holding), ignore
@@ -419,7 +426,7 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
 
                             let audio_data = stop_recording_sync(&app_handle);
                             state = State::Idle;
-                            spawn_pipeline(&app_handle, audio_data, &pipeline_running);
+                            enqueue_pipeline(&app_handle, audio_data, &pipeline_tx, &mut pending_pipelines);
                         }
                         (State::ContinuousRecording, HotkeyEvent::Released) => {
                             // Release after pressing to stop — already handled on Pressed, ignore
@@ -455,8 +462,8 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
 
                             // Stop WASAPI stream and discard audio buffer
                             cancel_recording(&app_handle);
-                            // cancel_recording already emits "idle" state
                             state = State::Idle;
+                            emit_pending_state(&app_handle, pending_pipelines);
                         }
                         (State::PendingHold, "limit_expired")
                         | (State::WaitingSecondTap, "limit_expired")
@@ -467,7 +474,7 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                             tap_timer = None;
                             let audio_data = stop_recording_sync(&app_handle);
                             state = State::Idle;
-                            spawn_pipeline(&app_handle, audio_data, &pipeline_running);
+                            enqueue_pipeline(&app_handle, audio_data, &pipeline_tx, &mut pending_pipelines);
                         }
                         _ => {
                             // Stale timer event from a previous state, ignore
@@ -514,7 +521,7 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                             }
                             let audio_data = stop_recording_sync(&app_handle);
                             state = State::Idle;
-                            spawn_pipeline(&app_handle, audio_data, &pipeline_running);
+                            enqueue_pipeline(&app_handle, audio_data, &pipeline_tx, &mut pending_pipelines);
                         }
                         (State::ContinuousRecording, BarAction::Cancel) => {
                             // Cancel button → discard
@@ -526,10 +533,22 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                             }
                             cancel_recording(&app_handle);
                             state = State::Idle;
+                            emit_pending_state(&app_handle, pending_pipelines);
                         }
                         _ => {
                             // Bar action in wrong state, ignore
                         }
+                    }
+                }
+
+                pipeline_completed = completed_rx.recv() => {
+                    if pipeline_completed.is_none() {
+                        log::error!("[hotkey] Pipeline worker stopped");
+                        break;
+                    }
+                    pending_pipelines = pending_pipelines.saturating_sub(1);
+                    if matches!(state, State::Idle) {
+                        emit_pending_state(&app_handle, pending_pipelines);
                     }
                 }
             }
