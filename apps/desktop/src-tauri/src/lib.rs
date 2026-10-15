@@ -1,3 +1,5 @@
+mod host;
+mod instance;
 mod commands;
 mod services;
 mod tray;
@@ -19,6 +21,10 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _instance = match instance::InstanceGuard::acquire() {
+        Ok(guard) => guard,
+        Err(error) => { eprintln!("{error}"); return; }
+    };
     let audio_recorder = services::audio::recorder::AudioRecorder::new();
     let http_client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))

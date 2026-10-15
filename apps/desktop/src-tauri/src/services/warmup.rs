@@ -1,3 +1,4 @@
+use crate::host as tauri;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::Manager;

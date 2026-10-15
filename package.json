@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "pnpm --filter @dictto/desktop tauri dev",
     "build": "pnpm --filter @dictto/desktop tauri build",
+    "build:native": "pwsh -NoProfile -File scripts/build-native.ps1",
+    "build:fleet": "pwsh -NoProfile -File scripts/build-fleet.ps1",
     "preview": "pnpm --filter @dictto/desktop preview"
   },
   "pnpm": {

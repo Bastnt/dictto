@@ -1,7 +1,8 @@
 # Proposal: separate Windows 11 native build
 
-Status: proposed, not implemented. The current shipping target remains the plain
-JavaScript/CSS Tauri build. No claim of lower RAM or power use without benchmarks.
+Status: implemented as the separate `apps/native` application. See its README for
+build/install instructions. The JavaScript/CSS Tauri variant remains available.
+No claim of lower RAM or power use without benchmarks.
 
 ## UI and theme
 

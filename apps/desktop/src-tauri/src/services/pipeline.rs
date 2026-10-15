@@ -1,3 +1,4 @@
+use crate::host as tauri;
 use std::time::Instant;
 use tauri::Manager;
 

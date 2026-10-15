@@ -1,3 +1,4 @@
+use crate::host as tauri;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::Emitter;
@@ -23,7 +24,7 @@ pub fn configure(value: chord::Chord) {
     tracker.chord = value;
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn set_hotkey_capture(active: bool) {
     let mut tracker = tracker().lock().unwrap();
     send_transition(tracker.reset());

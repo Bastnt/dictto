@@ -1,3 +1,4 @@
+use crate::host as tauri;
 use tauri::Manager;
 use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 use windows::core::PCWSTR;

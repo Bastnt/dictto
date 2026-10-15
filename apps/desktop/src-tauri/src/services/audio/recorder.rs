@@ -1,8 +1,9 @@
+use crate::host as tauri;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use tauri::Emitter;
 
-use crate::commands::audio::MicrophoneInfo;
+use crate::services::audio::MicrophoneInfo;
 use crate::services::audio::device_monitor::DeviceSelection;
 
 const SAMPLE_RATE: u32 = 16000;

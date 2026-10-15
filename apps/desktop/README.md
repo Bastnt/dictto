@@ -12,6 +12,9 @@ From the repository root:
 - `pnpm --filter @dictto/desktop test`: native DOM behavior tests.
 - `pnpm --filter @dictto/desktop build`: generate the frontend in `dist/`.
 - `pnpm build`: build and package the desktop application.
+- `pnpm build:fleet`: build and update the installed `Dictto-Fleet` executable,
+  keeping a backup. Ordinary frontend builds do not install the executable.
+- `pnpm build:native`: build/install the separate native Windows 11 variant.
 
 The settings and recording overlay load separately. Waveform events update existing
 DOM bars directly. System light/dark preferences control CSS theme variables.

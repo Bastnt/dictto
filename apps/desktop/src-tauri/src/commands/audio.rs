@@ -1,12 +1,4 @@
-use serde::Serialize;
-
-#[derive(Serialize, Clone)]
-pub struct MicrophoneInfo {
-    pub name: String,
-    pub id: String,
-    pub is_default: bool,
-    pub form_factor: String,
-}
+pub use crate::services::audio::MicrophoneInfo;
 
 #[tauri::command]
 pub fn list_microphones() -> Result<Vec<MicrophoneInfo>, String> {
