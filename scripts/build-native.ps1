@@ -30,5 +30,11 @@ $shortcut.TargetPath = $executable
 $shortcut.WorkingDirectory = $destination
 $shortcut.IconLocation = "$executable,0"
 $shortcut.Save()
+$desktopShortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Dictto Fleet.lnk'))
+$desktopShortcut.TargetPath = $executable
+$desktopShortcut.WorkingDirectory = $destination
+$desktopShortcut.IconLocation = "$executable,0"
+$desktopShortcut.Save()
 Write-Output "Installed native build: $executable"
+Write-Output "Desktop shortcut: $($desktopShortcut.FullName)"
 Write-Output "SHA-256: $installedHash"

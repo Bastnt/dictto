@@ -8,8 +8,10 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const UPDATE: u32 = WM_APP + 10;
-const WIDTH: i32 = 400;
-const HEIGHT: i32 = 54;
+const NORMAL_WIDTH: i32 = 216;
+const CONTINUOUS_WIDTH: i32 = 340;
+const ERROR_WIDTH: i32 = 340;
+const HEIGHT: i32 = 44;
 type Action = Arc<dyn Fn() + Send + Sync>;
 
 enum Message {
@@ -53,6 +55,7 @@ impl NativeOverlay {
                     processing: false,
                     error: String::new(),
                     bars: vec![0.05; 24],
+                    animation_phase: 0,
                 });
                 let state_pointer = (&mut *state as *mut State).cast();
                 let created = CreateWindowExW(
@@ -62,7 +65,7 @@ impl NativeOverlay {
                     WS_POPUP,
                     0,
                     0,
-                    WIDTH,
+                    NORMAL_WIDTH,
                     HEIGHT,
                     None,
                     None,
@@ -131,6 +134,7 @@ struct State {
     processing: bool,
     error: String,
     bars: Vec<f32>,
+    animation_phase: u8,
 }
 
 impl State {
@@ -153,6 +157,9 @@ impl State {
                 }
             }
             "dictation-error" => {
+                self.recording = false;
+                self.processing = false;
+                self.continuous = false;
                 self.error = "Dictation failed. Check API settings and the application log.".into()
             }
             _ => {}
@@ -161,6 +168,16 @@ impl State {
 
     fn active(&self) -> bool {
         self.recording || self.processing || !self.error.is_empty()
+    }
+
+    fn size(&self) -> (i32, i32) {
+        if !self.error.is_empty() {
+            (ERROR_WIDTH, 48)
+        } else if self.continuous {
+            (CONTINUOUS_WIDTH, HEIGHT)
+        } else {
+            (NORMAL_WIDTH, HEIGHT)
+        }
     }
 }
 
@@ -198,11 +215,16 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             }
             if layout_changed {
                 if state.active() {
-                    place(hwnd);
+                    place(hwnd, state);
                     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                 } else {
                     let _ = ShowWindow(hwnd, SW_HIDE);
                 }
+            }
+            if state.processing {
+                let _ = SetTimer(Some(hwnd), 2, 100, None);
+            } else {
+                let _ = KillTimer(Some(hwnd), 2);
             }
             if state.active() {
                 let _ = InvalidateRect(Some(hwnd), None, false);
@@ -210,6 +232,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             return LRESULT(0);
         }
         WM_TIMER => {
+            if wp.0 == 2 {
+                state.animation_phase = (state.animation_phase + 1) % 8;
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                return LRESULT(0);
+            }
             let _ = KillTimer(Some(hwnd), 1);
             state.error.clear();
             if !state.active() {
@@ -221,9 +248,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
         WM_LBUTTONDOWN if state.continuous && state.error.is_empty() => {
             let scale = GetDpiForWindow(hwnd).max(96) as f64 / 96.0;
             let x = (lp.0 as u16 as i16) as f64 / scale;
-            if x < 55.0 {
+            let (width, _) = state.size();
+            if x < 80.0 {
                 (state.cancel)();
-            } else if x > (WIDTH - 55) as f64 {
+            } else if x > (width - 80) as f64 {
                 (state.stop)();
             }
             return LRESULT(0);
@@ -233,7 +261,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             return LRESULT(0);
         }
         WM_DPICHANGED => {
-            place(hwnd);
+            place(hwnd, state);
             return LRESULT(0);
         }
         WM_PAINT => {
@@ -251,7 +279,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
     DefWindowProcW(hwnd, message, wp, lp)
 }
 
-unsafe fn place(hwnd: HWND) {
+unsafe fn place(hwnd: HWND, state: &State) {
     let mut point = POINT::default();
     let _ = GetCursorPos(&mut point);
     let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
@@ -263,8 +291,9 @@ unsafe fn place(hwnd: HWND) {
         return;
     }
     let scale = GetDpiForWindow(hwnd).max(96) as f64 / 96.0;
-    let width = (WIDTH as f64 * scale) as i32;
-    let height = (HEIGHT as f64 * scale) as i32;
+    let (logical_width, logical_height) = state.size();
+    let width = (logical_width as f64 * scale) as i32;
+    let height = (logical_height as f64 * scale) as i32;
     let area = info.rcWork;
     let _ = SetWindowPos(
         hwnd,
@@ -297,7 +326,8 @@ unsafe fn paint(hwnd: HWND, state: &State) {
     let fill = CreateSolidBrush(COLORREF(if dark { 0x00262626 } else { 0x00f4f4f4 }));
     let old = SelectObject(dc, fill.into());
     let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-    let scale = (bounds.right as f64 / WIDTH as f64).max(1.0);
+    let (logical_width, _) = state.size();
+    let scale = (bounds.right as f64 / logical_width as f64).max(1.0);
     let radius = (20.0 * scale) as i32;
     let _ = RoundRect(
         dc,
@@ -314,20 +344,50 @@ unsafe fn paint(hwnd: HWND, state: &State) {
     let foreground = COLORREF(if dark { 0x00f0f0f0 } else { 0x00202020 });
     let _ = SetTextColor(dc, foreground);
     let _ = SetBkMode(dc, TRANSPARENT);
-    let mut description = LOGFONTW { lfHeight: -(14.0 * scale) as i32, ..Default::default() };
-    for (slot, character) in description.lfFaceName.iter_mut().zip("Segoe UI".encode_utf16()) {
+    let mut description = LOGFONTW {
+        lfHeight: -(14.0 * scale) as i32,
+        ..Default::default()
+    };
+    for (slot, character) in description
+        .lfFaceName
+        .iter_mut()
+        .zip("Segoe UI".encode_utf16())
+    {
         *slot = character;
     }
     let font = CreateFontIndirectW(&description);
     let previous_font = SelectObject(dc, font.into());
-    let text = if !state.error.is_empty() {
-        state.error.as_str()
-    } else if state.processing {
-        "Transcribing..."
-    } else {
-        ""
-    };
-    if !text.is_empty() {
+    let text = state.error.as_str();
+    if state.processing && state.error.is_empty() {
+        let center_x = bounds.right / 2;
+        let center_y = bounds.bottom / 2;
+        let radius = (8.0 * scale) as i32;
+        for dot in 0..8 {
+            let angle =
+                (dot as f64 - f64::from(state.animation_phase)) * std::f64::consts::PI / 4.0;
+            let x = center_x + (radius as f64 * angle.cos()) as i32;
+            let y = center_y + (radius as f64 * angle.sin()) as i32;
+            let color = if dot == (7 - state.animation_phase as usize) % 8 {
+                COLORREF(0x00ffb347)
+            } else if dot % 2 == 0 {
+                foreground
+            } else {
+                COLORREF(if dark { 0x00777777 } else { 0x00999999 })
+            };
+            let brush = CreateSolidBrush(color);
+            let diameter = (4.0 * scale) as i32;
+            let old_brush = SelectObject(dc, brush.into());
+            let _ = Ellipse(
+                dc,
+                x - diameter / 2,
+                y - diameter / 2,
+                x + diameter / 2,
+                y + diameter / 2,
+            );
+            let _ = SelectObject(dc, old_brush);
+            let _ = DeleteObject(brush.into());
+        }
+    } else if !text.is_empty() {
         let mut rect = RECT {
             left: 12,
             top: 4,
@@ -343,15 +403,18 @@ unsafe fn paint(hwnd: HWND, state: &State) {
         );
     } else if state.recording {
         let brush = CreateSolidBrush(foreground);
-        for (i, amplitude) in state.bars.iter().enumerate() {
-            let x = ((70.0 + i as f64 * 10.5) * scale) as i32;
-            let height = (f64::from(*amplitude).max(0.08) * 28.0 * scale) as i32;
+        let count = state.bars.len().min(18);
+        let spacing = 5.0;
+        let start_x = logical_width as f64 / 2.0 - (count.saturating_sub(1) as f64 * spacing / 2.0);
+        for (i, amplitude) in state.bars.iter().take(count).enumerate() {
+            let x = ((start_x + i as f64 * spacing) * scale) as i32;
+            let height = (f64::from(*amplitude).max(0.08) * 22.0 * scale) as i32;
             FillRect(
                 dc,
                 &RECT {
                     left: x,
                     top: (bounds.bottom - height) / 2,
-                    right: x + (3.0 * scale) as i32,
+                    right: x + (2.0 * scale) as i32,
                     bottom: (bounds.bottom + height) / 2,
                 },
                 brush,
@@ -359,7 +422,10 @@ unsafe fn paint(hwnd: HWND, state: &State) {
         }
         let _ = DeleteObject(brush.into());
         if state.continuous {
-            for (text, left, right) in [("Cancel", 7, 58), ("Stop", WIDTH - 55, WIDTH - 5)] {
+            for (text, left, right) in [
+                ("Cancel", 7, 70),
+                ("Stop", logical_width - 70, logical_width - 7),
+            ] {
                 let mut rect = RECT {
                     left: (left as f64 * scale) as i32,
                     top: 0,
@@ -385,20 +451,35 @@ unsafe fn paint(hwnd: HWND, state: &State) {
 mod tests {
     #[test]
     fn native_window_shows_without_activation_and_routes_controls() {
-        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
         use windows::Win32::Foundation::*;
         use windows::Win32::UI::WindowsAndMessaging::*;
         let stopped = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::new(AtomicBool::new(false));
         let stop = stopped.clone();
         let cancel = cancelled.clone();
-        let overlay = super::NativeOverlay::spawn(Arc::new(move || { stop.store(true, Ordering::Release); }),
-            Arc::new(move || { cancel.store(true, Ordering::Release); })).unwrap();
+        let overlay = super::NativeOverlay::spawn(
+            Arc::new(move || {
+                stop.store(true, Ordering::Release);
+            }),
+            Arc::new(move || {
+                cancel.store(true, Ordering::Release);
+            }),
+        )
+        .unwrap();
         let hwnd = HWND(overlay.hwnd as _);
-        overlay.send("recording-state-changed", serde_json::json!({"state":"recording", "mode":"continuous"}));
+        overlay.send(
+            "recording-state-changed",
+            serde_json::json!({"state":"recording", "mode":"continuous"}),
+        );
         let wait = |condition: &dyn Fn() -> bool| {
             for _ in 0..100 {
-                if condition() { return; }
+                if condition() {
+                    return;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             assert!(condition());
@@ -406,15 +487,26 @@ mod tests {
         wait(&|| unsafe { IsWindowVisible(hwnd).as_bool() });
         unsafe {
             assert_ne!(GetForegroundWindow(), hwnd);
-            assert_ne!(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE.0 as isize, 0);
-            assert_eq!(SendMessageW(hwnd, WM_MOUSEACTIVATE, None, None).0, MA_NOACTIVATE as isize);
+            assert_ne!(
+                GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE.0 as isize,
+                0
+            );
+            assert_eq!(
+                SendMessageW(hwnd, WM_MOUSEACTIVATE, None, None).0,
+                MA_NOACTIVATE as isize
+            );
             let _ = PostMessageW(Some(hwnd), WM_LBUTTONDOWN, WPARAM(0), LPARAM(10));
         }
         wait(&|| cancelled.load(Ordering::Acquire));
         unsafe {
             let mut rect = RECT::default();
             GetClientRect(hwnd, &mut rect).unwrap();
-            let _ = PostMessageW(Some(hwnd), WM_LBUTTONDOWN, WPARAM(0), LPARAM((rect.right - 10) as isize));
+            let _ = PostMessageW(
+                Some(hwnd),
+                WM_LBUTTONDOWN,
+                WPARAM(0),
+                LPARAM((rect.right - 10) as isize),
+            );
         }
         wait(&|| stopped.load(Ordering::Acquire));
         assert_ne!(unsafe { GetForegroundWindow() }, hwnd);
@@ -434,6 +526,7 @@ mod tests {
             processing: false,
             error: String::new(),
             bars: vec![],
+            animation_phase: 0,
         };
         state.event(
             "dictation-error",
