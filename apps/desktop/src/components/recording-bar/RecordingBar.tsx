@@ -571,7 +571,7 @@ export function RecordingBar({ barOpacity }: RecordingBarProps) {
             pointerEvents: "none",
           }}
         >
-          <StatusIndicator />
+          <StatusIndicator active={showProcessing} />
         </div>
         {errorMessage && <div role="alert" style={{position: "absolute", inset: 0, display: "flex",
           alignItems: "center", justifyContent: "center", padding: "8px 18px", fontSize: 12,

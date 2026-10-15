@@ -11,6 +11,17 @@ vi.mock("../ContinuousControls", () => ({ContinuousControls: () => null}));
 import { RecordingBar } from "../RecordingBar";
 
 beforeEach(() => {state.recordingState = "idle"; state.error = ""; vi.clearAllMocks();});
+it("pauses processing animations while recording", () => {
+  state.recordingState = "recording";
+  const view = render(<RecordingBar barOpacity={0.9} />);
+  const dots = () => Array.from(view.container.querySelectorAll<HTMLElement>("span"))
+    .filter((element) => element.style.animation.includes("processing-wave"));
+  expect(dots()).toHaveLength(3);
+  expect(dots().every((element) => element.style.animationPlayState === "paused")).toBe(true);
+  state.recordingState = "processing";
+  view.rerender(<RecordingBar barOpacity={0.9} />);
+  expect(dots().every((element) => element.style.animationPlayState === "running")).toBe(true);
+});
 it("grants native visibility control only to the overlay", () => {
   expect(capability.windows).toEqual(["recording-bar"]);
   expect(capability.permissions).toContain("core:window:allow-show");

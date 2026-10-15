@@ -7,7 +7,8 @@ interface WaveformPayload {
 }
 
 export function useWaveform() {
-  const { waveformData, setWaveformData } = useAppStore();
+  const waveformData = useAppStore((state) => state.waveformData);
+  const setWaveformData = useAppStore((state) => state.setWaveformData);
 
   useEffect(() => {
     const unlisten = listen<WaveformPayload>("waveform-data", (event) => {

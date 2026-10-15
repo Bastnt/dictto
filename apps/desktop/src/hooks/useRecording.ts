@@ -8,7 +8,9 @@ interface RecordingStatePayload {
 }
 
 export function useRecording() {
-  const { recordingState, recordingMode, setRecordingState } = useAppStore();
+  const recordingState = useAppStore((state) => state.recordingState);
+  const recordingMode = useAppStore((state) => state.recordingMode);
+  const setRecordingState = useAppStore((state) => state.setRecordingState);
 
   useEffect(() => {
     const unlisten = listen<RecordingStatePayload>(

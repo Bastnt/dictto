@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Toggle } from "./Toggle";
 
 interface ApiTabProps {
   settings: Record<string, string>;
@@ -25,13 +26,12 @@ export function ApiTab({
       ] as const).map(([key, label, fallback]) => <div key={key} className="space-y-2">
         <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
           <label htmlFor={key}>{label}</label>
-          {key === "llm_model" && <label className="flex items-center gap-2 cursor-pointer">
+          {key === "llm_model" && <div className="flex items-center gap-2">
             <span>Text cleanup</span>
-            <input type="checkbox" role="switch" aria-label="Text cleanup"
-              className="accent-text"
+            <Toggle label="Text cleanup"
               checked={settings.cleanup_enabled !== "false"}
-              onChange={(event) => onSave("cleanup_enabled", String(event.target.checked))} />
-          </label>}
+              onChange={(checked) => onSave("cleanup_enabled", String(checked))} />
+          </div>}
         </div>
         <input id={key} className="w-full px-3 py-2 bg-surface border border-border rounded-md text-text"
           disabled={key === "llm_model" && settings.cleanup_enabled === "false"}
@@ -43,12 +43,12 @@ export function ApiTab({
         {key === "llm_model" && settings.cleanup_enabled === "false" &&
           <p className="text-[11px] text-text-tertiary">Original transcript is pasted without an extra model call.</p>}
         {key === "transcription_model" && <div className="pt-1">
-          <label className="flex items-center justify-between gap-3 text-xs text-text-secondary cursor-pointer">
+          <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
             <span>Warm transcription model</span>
-            <input type="checkbox" role="switch" aria-label="Warm transcription model" className="accent-text"
+            <Toggle label="Warm transcription model"
               checked={settings.transcription_warmup === "true"}
-              onChange={(event) => onSave("transcription_warmup", String(event.target.checked))} />
-          </label>
+              onChange={(checked) => onSave("transcription_warmup", String(checked))} />
+          </div>
           <p className="mt-1 text-[11px] text-text-tertiary">Send one second of silence at startup and recording start. Response discarded; provider charges may apply.</p>
         </div>}
       </div>)}

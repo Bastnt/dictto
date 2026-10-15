@@ -1,4 +1,5 @@
 import { HotkeySetting } from "./HotkeySetting";
+import { Toggle } from "./Toggle";
 import { LANGUAGES, Language } from "../../data/languages";
 import { FlagIcon } from "./FlagIcon";
 
@@ -44,20 +45,9 @@ export function GeneralTab({ settings, onSave, onOpenLanguageModal }: Props) {
           <p className="text-sm font-medium text-text-secondary">Start on boot</p>
           <p className="text-xs text-text-tertiary">Launch Dictto when you sign in</p>
         </div>
-        <button
-          onClick={() =>
-            onSave("auto_start", settings.auto_start === "true" ? "false" : "true")
-          }
-          className={`relative w-10 h-5 rounded-full transition-colors ${
-            settings.auto_start === "true" ? "bg-accent" : "bg-surface-elevated"
-          }`}
-        >
-          <span
-            className={`absolute top-0.5 left-0.5 w-4 h-4 bg-text rounded-full transition-transform ${
-              settings.auto_start === "true" ? "translate-x-5" : ""
-            }`}
-          />
-        </button>
+        <Toggle label="Start on boot"
+          checked={settings.auto_start === "true"}
+          onChange={(checked) => onSave("auto_start", String(checked))} />
       </div>
 
       {/* Sound effects — functional */}
@@ -66,20 +56,9 @@ export function GeneralTab({ settings, onSave, onOpenLanguageModal }: Props) {
           <p className="text-sm font-medium text-text-secondary">Sound effects</p>
           <p className="text-xs text-text-tertiary">Play sounds on recording events</p>
         </div>
-        <button
-          onClick={() =>
-            onSave("sound_effects_enabled", settings.sound_effects_enabled === "true" ? "false" : "true")
-          }
-          className={`relative w-10 h-5 rounded-full transition-colors ${
-            settings.sound_effects_enabled === "true" ? "bg-accent" : "bg-surface-elevated"
-          }`}
-        >
-          <span
-            className={`absolute top-0.5 left-0.5 w-4 h-4 bg-text rounded-full transition-transform ${
-              settings.sound_effects_enabled === "true" ? "translate-x-5" : ""
-            }`}
-          />
-        </button>
+        <Toggle label="Sound effects"
+          checked={settings.sound_effects_enabled === "true"}
+          onChange={(checked) => onSave("sound_effects_enabled", String(checked))} />
       </div>
 
       {/* Languages — functional */}
