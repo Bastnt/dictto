@@ -250,9 +250,14 @@ export async function mountSettings(root, api = platform) {
     const input = switchInput(label); input.disabled = true; action.append(input);
   }
   async function refreshCurrentMic() { const name = await api.invoke('get_current_microphone'); if (!disposed) { currentMic = name; updateMic(); } }
+  const endpoint = element('div', 'settings-endpoint');
+  const keySection = element('section', 'settings-key');
+  panels.api.append(endpoint);
   for (const [key, label, fallback] of [['api_base_url', 'API base URL', 'https://api.openai.com/v1'], ['transcription_model', 'Transcription model', 'gpt-4o-mini-transcribe'], ['llm_model', 'Cleanup model', 'gpt-4.1-nano']]) {
     const field = element('div', 'settings-field');
+    const heading = element('div', 'settings-field-heading');
     const labelNode = element('label', 'settings-label', label); labelNode.htmlFor = key;
+    heading.append(labelNode);
     const input = element('input', 'settings-input'); input.id = key;
     register(key, () => { if (!dirty.has(key) && document.activeElement !== input) input.value = settings[key] || fallback; });
     input.addEventListener('input', () => dirty.add(key));
@@ -265,24 +270,33 @@ export async function mountSettings(root, api = platform) {
       }
       dirty.delete(key); sync(key);
     });
-    field.append(labelNode, input); panels.api.append(field);
-    if (key === 'transcription_model') settingSwitch(panels.api, 'transcription_warmup', 'Warm transcription model', 'Send one second of silence at startup and recording start. Response discarded; provider charges may apply.');
+    field.append(heading, input);
+    if (key === 'api_base_url') {
+      endpoint.append(field, keySection);
+      field.append(element('p', 'settings-description', 'Include /v1. Used for transcription and cleanup.'));
+    } else panels.api.append(field);
+    if (key === 'transcription_model') {
+      settingSwitch(heading, 'transcription_warmup', 'Warm transcription model');
+      field.append(element('p', 'settings-description', 'Warm-up sends 1 second of silence at startup and recording start; provider charges may apply.'));
+    }
     if (key === 'llm_model') {
-      settingSwitch(panels.api, 'cleanup_enabled', 'Text cleanup', 'When disabled, the original transcript is pasted without an extra model call.', true);
+      settingSwitch(heading, 'cleanup_enabled', 'Text cleanup', undefined, true);
+      field.append(element('p', 'settings-description', 'When disabled, paste the original transcript without an extra model call.'));
       register('cleanup_enabled', () => { input.disabled = settings.cleanup_enabled === 'false'; });
     }
   }
-  panels.api.append(element('p', 'settings-description', 'Include /v1 in the URL. Both transcription and cleanup use this endpoint.'));
-  const keySection = element('section', 'settings-key');
-  panels.api.append(keySection);
   function renderKeyEditor(edit = !hasKey) {
-    keySection.replaceChildren(element('h2', 'settings-label', 'API Key'));
+    const heading = element('div', 'settings-field-heading');
+    const label = element('label', 'settings-label', 'API Key'); label.htmlFor = 'api_key';
+    heading.append(label);
+    keySection.replaceChildren(heading);
     const input = element('input', 'settings-input');
+    input.id = 'api_key';
     input.setAttribute('aria-label', 'API Key'); input.autocomplete = 'off';
     const actions = element('div', 'settings-actions');
     keySection.append(input, actions);
     if (edit) {
-      input.type = 'password'; input.placeholder = 'API key for the configured endpoint';
+      input.type = 'password'; input.placeholder = 'Enter API key';
       const saveButton = button('Save Key', async () => {
         if (!input.value.trim()) return;
         saveButton.disabled = true;
@@ -299,7 +313,7 @@ export async function mountSettings(root, api = platform) {
       keySection.append(element('p', 'settings-description', 'Required for transcription and text cleanup.'));
     } else {
       input.readOnly = true; input.value = keyHint;
-      keySection.append(element('p', 'settings-configured', 'Configured'));
+      heading.append(element('span', 'settings-configured', 'Configured'));
       actions.append(button('Update Key', () => { renderKeyEditor(true); keySection.querySelector('input').focus(); }), button('Remove', () => {
         const dialog = openDialog('Remove API key');
         dialog.body.append(element('p', '', "Are you sure? Dictto won't work without an API key."));

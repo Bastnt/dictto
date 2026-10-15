@@ -134,7 +134,7 @@
   filter: brightness(1.1);
 }
 
-.settings-button-primary {
+.settings-button-primary,.settings-button-primary:hover {
   background: var(--color-text);
   color: var(--color-bg);
 }
@@ -233,16 +233,66 @@
 }
 
 .settings-key {
-  margin-top: 28px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .settings-key .settings-actions {
-  margin-top: 12px;
+  gap: 8px;
 }
 
 .settings-configured {
   color: var(--color-accent);
   font-size: 11px;
+}
+
+.settings-endpoint {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 20px;
+}
+
+#settings-panel-api {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+#settings-panel-api .settings-field {
+  min-width: 0;
+  margin: 0;
+}
+
+.settings-field-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 24px;
+}
+
+.settings-field-heading .settings-label {
+  margin: 0;
+}
+
+.settings-field-heading .settings-row {
+  margin: 0;
+  gap: 10px;
+}
+
+.settings-field-heading .settings-row .settings-label {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+@media(max-width:480px) {
+  .settings-endpoint {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
 }
 
 .settings-error {
