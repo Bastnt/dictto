@@ -4,6 +4,7 @@ use tauri::Emitter;
 use tauri::Manager;
 use crate::services::audio::device_monitor::DeviceSelection;
 use crate::services::sound::{play_sound, Sound};
+use crate::services::pipeline::RecordedAudio;
 pub mod chord;
 static TRACKER: OnceLock<Mutex<chord::Tracker>> = OnceLock::new();
 
@@ -114,7 +115,7 @@ fn emit_state(app: &tauri::AppHandle, state: &str, mode: Option<&str>) {
 
 /// Synchronously stop the recorder and return WAV data.
 /// Returns None for empty/short recordings or stop failures.
-fn stop_recording_sync(app: &tauri::AppHandle) -> Option<Vec<u8>> {
+fn stop_recording_sync(app: &tauri::AppHandle) -> Option<RecordedAudio> {
     let t = std::time::Instant::now();
     log::debug!("[hotkey] stop_recording_sync: acquiring recorder lock...");
     let app_state = app.state::<crate::AppState>();
@@ -127,7 +128,7 @@ fn stop_recording_sync(app: &tauri::AppHandle) -> Option<Vec<u8>> {
                 t.elapsed(),
                 data.len() as f64 / 1024.0
             );
-            Some(data)
+            Some(RecordedAudio { data, released_at: t })
         }
         Err(crate::services::audio::recorder::AudioError::EmptyRecording) => {
             log::debug!("[hotkey] stop_recording_sync: empty recording (too short or silent)");
@@ -151,8 +152,8 @@ fn emit_pending_state(app: &tauri::AppHandle, pending: usize) {
 /// Queue every completed recording for serial transcription and clipboard injection.
 fn enqueue_pipeline(
     app: &tauri::AppHandle,
-    audio_data: Option<Vec<u8>>,
-    pipeline_tx: &tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    audio_data: Option<RecordedAudio>,
+    pipeline_tx: &tokio::sync::mpsc::UnboundedSender<RecordedAudio>,
     pending: &mut usize,
 ) {
     let Some(data) = audio_data else {
@@ -288,7 +289,7 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
         let mut tap_timer: Option<AsyncJoinHandle> = None;
         // Channel for tap timer expiry notifications
         let (timer_tx, mut timer_rx) = tokio::sync::mpsc::unbounded_channel::<&'static str>();
-        let (pipeline_tx, mut pipeline_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (pipeline_tx, mut pipeline_rx) = tokio::sync::mpsc::unbounded_channel::<RecordedAudio>();
         let (completed_tx, mut completed_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let pipeline_app = app_handle.clone();
         tauri::async_runtime::spawn(async move {

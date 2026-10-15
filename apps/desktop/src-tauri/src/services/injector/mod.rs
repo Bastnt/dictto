@@ -1,6 +1,6 @@
 pub mod clipboard;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, thiserror::Error)]
 pub enum InjectionError {
@@ -10,30 +10,24 @@ pub enum InjectionError {
     KeyboardError(String),
 }
 
-pub async fn inject_text(text: &str, paste_delay_ms: u64) -> Result<(), InjectionError> {
-    // 1. Save current clipboard content
+pub async fn inject_text(text: &str, paste_delay_ms: u64) -> Result<Instant, InjectionError> {
     let saved = clipboard::save_clipboard();
-
-    // 2. Write text to clipboard
     clipboard::set_clipboard_text(text)?;
 
-    // 3. Small delay before paste
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // 4. Simulate Ctrl+V
+    // Windows publishes clipboard text synchronously, so paste can start immediately.
     simulate_paste()?;
+    let pasted_at = Instant::now();
 
-    // 5. Wait for paste to complete
+    // Keep the text available until the target application has read it.
     tokio::time::sleep(Duration::from_millis(paste_delay_ms)).await;
 
-    // 6. Restore original clipboard
     if let Some(content) = saved {
         if let Err(e) = clipboard::restore_clipboard(content) {
             log::warn!("Warning: Failed to restore clipboard: {}", e);
         }
     }
 
-    Ok(())
+    Ok(pasted_at)
 }
 
 fn simulate_paste() -> Result<(), InjectionError> {

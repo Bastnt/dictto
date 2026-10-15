@@ -31,15 +31,21 @@ pub enum PipelineError {
     InjectionFailed(String),
 }
 
+pub struct RecordedAudio {
+    pub data: Vec<u8>,
+    pub released_at: Instant,
+}
+
 pub async fn run_pipeline(
     app: &tauri::AppHandle,
-    audio_data: Vec<u8>,
+    recording: RecordedAudio,
 ) -> Result<(), PipelineError> {
     let pipeline_start = Instant::now();
+    let RecordedAudio { data: audio_data, released_at } = recording;
     let audio_size_kb = audio_data.len() as f64 / 1024.0;
     log::info!(
-        "[pipeline] Starting pipeline ({:.1} KB audio)",
-        audio_size_kb
+        "[pipeline] Starting pipeline ({:.1} KB audio, {:?} since release including stop/encode and queue)",
+        audio_size_kb, pipeline_start.duration_since(released_at)
     );
 
     // 1. Get API key
@@ -135,10 +141,12 @@ pub async fn run_pipeline(
 
     // 5. Inject text
     let t = Instant::now();
-    injector::inject_text(&cleaned_text, paste_delay_ms)
+    let pasted_at = injector::inject_text(&cleaned_text, paste_delay_ms)
         .await
         .map_err(|e| PipelineError::InjectionFailed(e.to_string()))?;
     log::info!("[pipeline] Text injection done in {:?}", t.elapsed());
+    log::info!("[pipeline] Release to Ctrl+V: {:?}; clipboard restoration: {:?}",
+        pasted_at.duration_since(released_at), pasted_at.elapsed());
 
     // 6. Save to history
     let t = Instant::now();

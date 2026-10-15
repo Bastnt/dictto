@@ -4,6 +4,9 @@ use std::time::Duration;
 use super::transcription::{TranscriptionConfig, TranscriptionEngine};
 use super::llm::{LLMProcessor, ProcessingContext};
 
+// These tests exercise the process-wide warmup/preemption coordinator.
+static ACTIVITY_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn endpoint(reply: &'static str) -> (String, std::thread::JoinHandle<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}/v1/", listener.local_addr().unwrap());
@@ -31,6 +34,7 @@ fn endpoint(reply: &'static str) -> (String, std::thread::JoinHandle<String>) {
 
 #[tokio::test]
 async fn transcription_uses_custom_endpoint_model_and_bearer() {
+    let _activity = ACTIVITY_TEST.lock().await;
     let (base, request) = endpoint(r#"{"text":"Bonjour"}"#);
     let engine = super::transcription::openai_api::OpenAIWhisper::with_client(
         "test-api-key".into(), reqwest::Client::new(), base, "whisper-1".into());
@@ -65,6 +69,7 @@ async fn cleanup_uses_custom_endpoint_and_parses_structured_text() {
 
 #[tokio::test]
 async fn warmup_posts_silent_wav_to_selected_model_and_discards_response() {
+    let _activity = ACTIVITY_TEST.lock().await;
     let (base, request) = endpoint("{}");
     super::warmup::send(&reqwest::Client::new(), &base, "local-whisper", "test-key").await.unwrap();
     let request = request.join().unwrap();
@@ -77,6 +82,7 @@ async fn warmup_posts_silent_wav_to_selected_model_and_discards_response() {
 
 #[tokio::test]
 async fn repeated_warmup_reuses_the_completed_warmup() {
+    let _activity = ACTIVITY_TEST.lock().await;
     let (base, request) = endpoint("{}");
     let client = reqwest::Client::new();
     super::warmup::send(&client, &base, "local-whisper", "test-key").await.unwrap();
@@ -86,7 +92,8 @@ async fn repeated_warmup_reuses_the_completed_warmup() {
 }
 
 #[tokio::test]
-async fn warmup_waits_for_response_body_before_releasing_transcription() {
+async fn real_transcription_preempts_stalled_warmup() {
+    let _activity = ACTIVITY_TEST.lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let (headers_sent, headers_received) = tokio::sync::oneshot::channel();
@@ -110,26 +117,35 @@ async fn warmup_waits_for_response_body_before_releasing_transcription() {
         stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n").unwrap();
         headers_sent.send(()).unwrap();
         wait_body.recv_timeout(Duration::from_secs(5)).unwrap();
-        stream.write_all(b"{}").unwrap();
+        let _ = stream.write_all(b"{}");
     });
+    let cancelled_base = base.clone();
     let warmup = tokio::spawn(async move {
         super::warmup::send(&reqwest::Client::new(), &base, "local-whisper", "key").await
     });
     headers_received.await.unwrap();
     let (transcription_base, transcription_request) = endpoint(r#"{"text":"Bonjour"}"#);
-    let transcription = tokio::spawn(async move {
+    let mut transcription = tokio::spawn(async move {
         let engine = super::transcription::openai_api::OpenAIWhisper::with_client(
             "key".into(), reqwest::Client::new(), transcription_base, "local-whisper".into());
         engine.transcribe(b"wav-audio", &TranscriptionConfig { language: None, prompt: None }).await
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let finished_before_body = warmup.is_finished();
-    let transcription_overlapped = transcription.is_finished();
+    let started = std::time::Instant::now();
+    let early_result = tokio::time::timeout(Duration::from_millis(250), &mut transcription).await;
+    let preempted = early_result.is_ok();
+    let elapsed = started.elapsed();
     release_body.send(()).unwrap();
     warmup.await.unwrap().unwrap();
-    assert_eq!(transcription.await.unwrap().unwrap().text, "Bonjour");
+    let result = match early_result {
+        Ok(result) => result,
+        Err(_) => transcription.await,
+    };
+    assert_eq!(result.unwrap().unwrap().text, "Bonjour");
     transcription_request.join().unwrap();
     server.join().unwrap();
-    assert!(!finished_before_body, "warmup must consume its complete response");
-    assert!(!transcription_overlapped, "transcription must wait for warmup completion");
+    assert!(preempted, "real transcription waited {:?} for a stalled warmup", elapsed);
+    eprintln!("real transcription completed in {:?} while warmup body was stalled", elapsed);
+    // The cancelled model was not warmed: with its endpoint closed, a retry must fail.
+    assert!(super::warmup::send(&reqwest::Client::new(), &cancelled_base,
+        "local-whisper", "key").await.is_err());
 }

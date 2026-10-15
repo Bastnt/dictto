@@ -1,9 +1,18 @@
 use crate::host as tauri;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::LazyLock;
 use std::time::Duration;
 use tauri::Manager;
 
 pub(super) static ACTIVITY: tokio::sync::Mutex<WarmModels> = tokio::sync::Mutex::const_new(WarmModels { recent: Vec::new() });
+
+static FOREGROUND: LazyLock<tokio::sync::watch::Sender<()>> = LazyLock::new(|| {
+    tokio::sync::watch::channel(()).0
+});
+
+pub(super) fn prioritize_transcription() {
+    FOREGROUND.send_replace(());
+}
 
 pub(super) struct WarmModels {
     recent: Vec<(String, String, std::time::Instant)>,
@@ -43,15 +52,26 @@ fn silent_wav() -> Vec<u8> {
 }
 
 pub(super) async fn send(client: &reqwest::Client, base: &str, model: &str, key: &str) -> Result<(), reqwest::Error> {
-    // Recording warmup and real audio share one flight, including startup warmup.
+    let mut foreground = FOREGROUND.subscribe();
     let mut activity = ACTIVITY.lock().await;
-    if activity.is_warm(base, model) { return Ok(()); }
+    if foreground.has_changed().unwrap_or(true) || activity.is_warm(base, model) {
+        return Ok(());
+    }
     let file = reqwest::multipart::Part::bytes(silent_wav())
         .file_name("warmup.wav").mime_str("audio/wav").unwrap();
-    client.post(format!("{}/audio/transcriptions", base.trim_end_matches('/')))
-        .bearer_auth(key)
-        .multipart(reqwest::multipart::Form::new().text("model", model.to_owned()).part("file", file))
-        .timeout(Duration::from_secs(120)).send().await?.error_for_status()?.bytes().await?;
+    let request = async {
+        client.post(format!("{}/audio/transcriptions", base.trim_end_matches('/')))
+            .bearer_auth(key)
+            .multipart(reqwest::multipart::Form::new().text("model", model.to_owned()).part("file", file))
+            .timeout(Duration::from_secs(120)).send().await?.error_for_status()?.bytes().await?;
+        Ok::<(), reqwest::Error>(())
+    };
+    tokio::select! {
+        biased;
+        // Drop the background request and its lock before real audio is submitted.
+        _ = foreground.changed() => return Ok(()),
+        result = request => result?,
+    }
     activity.completed(base, model);
     Ok(())
 }

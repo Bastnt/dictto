@@ -33,6 +33,7 @@ impl TranscriptionEngine for OpenAIWhisper {
         audio_data: &[u8],
         config: &TranscriptionConfig,
     ) -> Result<TranscriptionResult, TranscriptionError> {
+        crate::services::warmup::prioritize_transcription();
         let mut activity = crate::services::warmup::ACTIVITY.lock().await;
         let mut last_error = TranscriptionError::Timeout;
 
