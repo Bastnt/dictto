@@ -114,7 +114,7 @@ Read the full [Privacy Policy →](PRIVACY.md)
 | Layer | Technology |
 |---|---|
 | **Desktop framework** | [Tauri v2](https://v2.tauri.app/) (Rust backend + WebView frontend) |
-| **Frontend** | React 19 + TypeScript + TailwindCSS v4 |
+| **Frontend** | Plain JavaScript ES modules + native CSS |
 | **Audio capture** | WASAPI (native Windows audio via Microsoft `windows` crate) |
 | **Transcription** | [OpenAI Whisper API](https://platform.openai.com/docs/guides/speech-to-text) (BYOK) |
 | **Text cleanup** | [OpenAI GPT](https://platform.openai.com/docs/guides/text-generation) (BYOK) |

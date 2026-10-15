@@ -1,0 +1,461 @@
+.settings-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.settings-header {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.settings-title {
+  font-size: 16px;
+  letter-spacing: -.4px;
+  margin: 0;
+  padding: 20px 28px;
+  flex: 1;
+  white-space: nowrap;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 10px 20px;
+}
+
+.settings-tab {
+  border: 0;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 4px;
+}
+
+.settings-tab[aria-selected=true] {
+  background: var(--color-surface-elevated);
+  color: var(--color-text);
+}
+
+.settings-window-controls {
+  display: flex;
+}
+
+.settings-window-button {
+  width: 46px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 18px;
+}
+
+.settings-window-button:hover {
+  background: var(--color-border-strong);
+}
+
+.settings-window-close:hover {
+  background: var(--color-danger);
+  color: white;
+}
+
+.settings-main {
+  padding: 28px;
+  overflow: auto;
+  flex: 1;
+}
+
+.settings-panel {
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 26px;
+}
+
+.settings-copy {
+  min-width: 0;
+}
+
+.settings-label {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  margin: 0 0 5px;
+}
+
+.settings-description {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+  margin: 3px 0 0;
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.settings-button {
+  padding: 7px 13px;
+  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 5px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.settings-button:hover {
+  color: var(--color-text);
+  filter: brightness(1.1);
+}
+
+.settings-button-primary {
+  background: var(--color-text);
+  color: var(--color-bg);
+}
+
+.settings-button-danger {
+  color: var(--color-danger);
+}
+
+.settings-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  display: inline-block;
+  box-sizing: border-box;
+  width: 40px;
+  min-width: 40px;
+  height: 20px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-surface-elevated);
+  cursor: pointer;
+  margin: 0;
+  transition: background .15s;
+}
+
+.settings-switch:before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-text);
+  transition: transform .15s;
+}
+
+.settings-switch:checked {
+  background: var(--color-accent);
+}
+
+.settings-switch:checked:before {
+  transform: translateX(20px);
+  background: #fff;
+}
+
+.settings-switch:disabled {
+  cursor: default;
+}
+
+.settings-shell button:focus-visible,.settings-backdrop button:focus-visible,.settings-switch:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 4px;
+}
+
+.settings-input {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-radius: 5px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.settings-input:focus {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.settings-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.settings-input:disabled,button:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+.settings-coming-soon {
+  opacity: .35;
+}
+
+.settings-capture {
+  margin-top: -12px;
+  margin-bottom: 24px;
+}
+
+.settings-key {
+  margin-top: 28px;
+}
+
+.settings-key .settings-actions {
+  margin-top: 12px;
+}
+
+.settings-configured {
+  color: var(--color-accent);
+  font-size: 11px;
+}
+
+.settings-error {
+  margin: 12px 28px 0;
+  color: var(--color-danger);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.settings-flag {
+  width: 20px;
+  height: 14px;
+  object-fit: cover;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.settings-globe {
+  font-size: 20px;
+  width: 20px;
+  line-height: 14px;
+  text-align: center;
+  color: var(--color-text-tertiary);
+}
+
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(18,17,15,.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  color: var(--color-text);
+}
+
+.settings-dialog {
+  width: 480px;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 20px 70px #0005;
+}
+
+.settings-dialog-wide {
+  width: 760px;
+  height: 560px;
+}
+
+.settings-dialog-header {
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.settings-dialog-header h2 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.settings-dialog-body {
+  padding: 16px;
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+.settings-dialog-footer {
+  padding: 14px 20px;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.settings-auto-language {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-end;
+  font-size: 12px;
+  margin-bottom: 14px;
+}
+
+.settings-language-layout {
+  display: grid;
+  grid-template-columns: 3fr 1fr;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.settings-language-grid {
+  display: grid;
+  grid-template-columns: repeat(3,minmax(0,1fr));
+  gap: 8px;
+  align-content: start;
+}
+
+.settings-language-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-language-card[aria-pressed=true],.settings-device-card[aria-pressed=true] {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-elevated);
+}
+
+.settings-language-selected {
+  border-left: 1px solid var(--color-border);
+  padding-left: 16px;
+  font-size: 12px;
+}
+
+.settings-language-selected h3 {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  margin-top: 0;
+}
+
+.settings-device-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  text-align: left;
+  padding: 13px;
+  margin-bottom: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.settings-shell [hidden],.settings-backdrop [hidden] {
+  display: none!important;
+}
+
+@media(max-width:680px) {
+  .settings-title {
+    padding: 16px;
+    font-size: 14px;
+  }
+  .settings-tabs {
+    padding: 8px;
+    gap: 0;
+  }
+  .settings-tab {
+    padding: 7px 9px;
+  }
+  .settings-window-button {
+    width: 32px;
+  }
+  .settings-main {
+    padding: 20px;
+  }
+  .settings-row {
+    gap: 12px;
+  }
+  .settings-actions {
+    gap: 8px;
+  }
+  .settings-language-grid {
+    grid-template-columns: repeat(2,minmax(0,1fr));
+  }
+  .settings-language-layout {
+    grid-template-columns: 3fr 1fr;
+  }
+  .settings-inline {
+    flex-wrap: wrap;
+  }
+}
+
+@media(prefers-reduced-motion:reduce) {
+  .settings-switch,.settings-switch:before {
+    transition: none;
+  }
+}
+
+.settings-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-brand {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  pointer-events: none;
+}
+
+.settings-brand svg {
+  width: 100%;
+  height: 100%;
+}

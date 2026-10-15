@@ -8,6 +8,7 @@ target/
 dist/
 build/
 .vite/
+.artifacts/
 
 # Environment
 .env
