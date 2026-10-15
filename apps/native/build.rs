@@ -1,8 +1,10 @@
 fn main() {
-    windows_reactor_setup::as_self_contained();
-    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    let profile = output.ancestors().nth(3).unwrap();
-    std::fs::copy("../desktop/src-tauri/icons/icon.ico", profile.join("icon.ico"))
-        .expect("copy native application icon");
+    winresource::WindowsResource::new()
+        .set_icon("../desktop/src-tauri/icons/icon.ico")
+        .set_manifest(r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+<dependency><dependentAssembly><assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/></dependentAssembly></dependency>
+</assembly>"#)
+        .compile()
+        .expect("compile application resources");
     println!("cargo:rerun-if-changed=../desktop/src-tauri/icons/icon.ico");
 }

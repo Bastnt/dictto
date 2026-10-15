@@ -57,6 +57,8 @@ pub mod async_runtime {
     pub fn initialize() -> Result<(), String> {
         if RUNTIME.get().is_none() {
             let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_name("dictto-async")
                 .enable_all()
                 .build()
                 .map_err(|e| e.to_string())?;
@@ -72,5 +74,12 @@ pub mod async_runtime {
             .get()
             .expect("native Tokio runtime initialized")
             .spawn(future)
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn background_runtime_uses_two_workers() {
+        initialize().unwrap();
+        assert_eq!(RUNTIME.get().unwrap().metrics().num_workers(), 2);
     }
 }
