@@ -26,9 +26,9 @@ variant last enabled/start-restored that setting.
 Native settings use explicit save controls for editable values. Closing settings
 destroys the settings window and its controls; use the tray to recreate settings
 or quit. Unsaved edits are discarded on close. The recording overlay does not
-activate its window. Its compact recording waveform updates on audio events;
-processing displays a small spinner animated at 10 frames per second. No drawing
-loop runs while idle.
+activate its window. Its compact recording waveform updates across the pill on
+audio events; processing displays a white spinner at 5 frames per second. No
+drawing loop runs while idle.
 
 Developer checks:
 

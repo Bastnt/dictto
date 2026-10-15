@@ -150,10 +150,11 @@ impl State {
             }
             "waveform-data" => {
                 if let Some(values) = value["amplitudes"].as_array() {
-                    self.bars = values
+                    let samples: Vec<f32> = values
                         .iter()
                         .map(|n| n.as_f64().unwrap_or(0.0).clamp(0.0, 1.0) as f32)
                         .collect();
+                    self.bars = fit_bars(&samples, 24);
                 }
             }
             "dictation-error" => {
@@ -222,7 +223,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
             }
             if state.processing {
-                let _ = SetTimer(Some(hwnd), 2, 100, None);
+                let _ = SetTimer(Some(hwnd), 2, 200, None);
             } else {
                 let _ = KillTimer(Some(hwnd), 2);
             }
@@ -306,6 +307,22 @@ unsafe fn place(hwnd: HWND, state: &State) {
     );
 }
 
+fn fit_bars(samples: &[f32], count: usize) -> Vec<f32> {
+    match samples.len() {
+        0 => vec![0.05; count],
+        1 => vec![samples[0]; count],
+        length => (0..count)
+            .map(|index| {
+                let position = index as f32 * (length - 1) as f32 / (count - 1).max(1) as f32;
+                let lower = position.floor() as usize;
+                let upper = (lower + 1).min(length - 1);
+                let blend = position - lower as f32;
+                samples[lower] * (1.0 - blend) + samples[upper] * blend
+            })
+            .collect(),
+    }
+}
+
 fn dark_theme() -> bool {
     winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
         .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
@@ -367,13 +384,13 @@ unsafe fn paint(hwnd: HWND, state: &State) {
                 (dot as f64 - f64::from(state.animation_phase)) * std::f64::consts::PI / 4.0;
             let x = center_x + (radius as f64 * angle.cos()) as i32;
             let y = center_y + (radius as f64 * angle.sin()) as i32;
-            let color = if dot == (7 - state.animation_phase as usize) % 8 {
-                COLORREF(0x00ffb347)
-            } else if dot % 2 == 0 {
-                foreground
+            let shade = (dot + usize::from(state.animation_phase)) % 8;
+            let channel = if dark {
+                0x4c + shade as u32 * 0x19
             } else {
-                COLORREF(if dark { 0x00777777 } else { 0x00999999 })
+                0xf2 - shade as u32 * 0x19
             };
+            let color = COLORREF((channel << 16) | (channel << 8) | channel);
             let brush = CreateSolidBrush(color);
             let diameter = (4.0 * scale) as i32;
             let old_brush = SelectObject(dc, brush.into());
@@ -403,12 +420,12 @@ unsafe fn paint(hwnd: HWND, state: &State) {
         );
     } else if state.recording {
         let brush = CreateSolidBrush(foreground);
-        let count = state.bars.len().min(18);
+        let count = state.bars.len().min(24);
         let spacing = 5.0;
         let start_x = logical_width as f64 / 2.0 - (count.saturating_sub(1) as f64 * spacing / 2.0);
         for (i, amplitude) in state.bars.iter().take(count).enumerate() {
             let x = ((start_x + i as f64 * spacing) * scale) as i32;
-            let height = (f64::from(*amplitude).max(0.08) * 22.0 * scale) as i32;
+            let height = ((3.0 + f64::from(*amplitude) * 19.0) * scale) as i32;
             FillRect(
                 dc,
                 &RECT {

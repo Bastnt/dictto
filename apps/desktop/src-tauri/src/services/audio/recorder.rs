@@ -806,9 +806,7 @@ unsafe fn capture_loop(
                         let amplitudes: Vec<f32> = if amplitude_buf.len() >= WAVEFORM_BARS {
                             amplitude_buf[amplitude_buf.len() - WAVEFORM_BARS..].to_vec()
                         } else {
-                            let mut v = vec![0.0f32; WAVEFORM_BARS - amplitude_buf.len()];
-                            v.extend_from_slice(&amplitude_buf);
-                            v
+                            amplitude_buf.clone()
                         };
                         let _ = handle.emit(
                             "waveform-data",
