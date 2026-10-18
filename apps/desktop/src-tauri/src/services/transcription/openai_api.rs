@@ -26,6 +26,42 @@ const TRANSCRIPTION_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_ATTEMPTS: u32 = 2;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_selection_is_preserved_and_only_canary_rejects_auto() {
+        for languages in [vec![], vec!["auto".into()], vec!["fr".into(), "en".into()]] {
+            let config = TranscriptionConfig::from_languages(&languages);
+            assert!(config.validate("canary-1b-v2").is_err());
+            assert!(config.validate("whisper-1").is_ok());
+        }
+        let languages = vec!["fr".into()];
+        let config = TranscriptionConfig::from_languages(&languages);
+        assert!(config.validate("canary-1b-v2").is_ok());
+        assert_eq!(config.language.as_deref(), Some("fr"));
+        assert_eq!(languages, ["fr"]);
+    }
+
+    #[tokio::test]
+    async fn warmup_rejects_auto_before_uploading() {
+        let error = crate::services::warmup::send(&reqwest::Client::new(),
+            "http://127.0.0.1:1/v1", "canary-1b-v2", "key", None).await.unwrap_err();
+        assert!(error.to_string().contains("auto-detection"));
+    }
+
+    #[tokio::test]
+    async fn canary_rejects_auto_before_uploading_even_empty_audio() {
+        let engine = OpenAIWhisper::with_client("key".into(), reqwest::Client::new(),
+            "http://127.0.0.1:1/v1".into(), "canary-1b-v2".into());
+        let error = engine.transcribe(&[], &TranscriptionConfig { language: None, prompt: None })
+            .await.err().expect("auto-detection must be rejected");
+        assert!(error.to_string().contains("auto-detection"), "{error}");
+        assert!(error.to_string().contains("Languages"), "{error}");
+    }
+}
+
 #[async_trait]
 impl TranscriptionEngine for OpenAIWhisper {
     async fn transcribe(
@@ -33,6 +69,7 @@ impl TranscriptionEngine for OpenAIWhisper {
         audio_data: &[u8],
         config: &TranscriptionConfig,
     ) -> Result<TranscriptionResult, TranscriptionError> {
+        config.validate(&self.model)?;
         crate::services::warmup::prioritize_transcription();
         let mut activity = crate::services::warmup::ACTIVITY.lock().await;
         let mut last_error = TranscriptionError::Timeout;

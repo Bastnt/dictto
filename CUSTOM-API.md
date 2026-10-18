@@ -48,3 +48,10 @@ cargo test --lib
 The fork disables upstream updater endpoints to preserve its custom API features.
 
 Enable **Warm transcription model** to send a silent one-second WAV at app startup and recording start through the configured transcription API. Concurrent warmups are skipped. Recording does not wait, failures are silent, and the response is discarded. Off by default; providers may bill these requests.
+
+Canary (`canary-1b-v2`) requires exactly one language in **Settings > General > Languages**.
+Auto-detect and multiple selected languages are rejected with an explicit message, even for
+a brief recording. No language is forced by the app. Warmup uses the selected language,
+including when a short or silent recording is discarded. A successful warmup is reused
+for four minutes, so repeated taps do not send redundant requests.
+Native diagnostics are written to `%LOCALAPPDATA%/com.dictto.app/logs/Dictto-Native.log`.

@@ -99,15 +99,7 @@ pub async fn run_pipeline(
     // 3. Transcribe audio
     let t = Instant::now();
     let whisper = OpenAIWhisper::with_client(api_key.clone(), http_client.clone(), base_url.clone(), transcription_model);
-    let config = TranscriptionConfig {
-        // PIPE-01: 1 real language -> send code; PIPE-02: 2+ OR ["auto"] sentinel -> None (auto-detect)
-        language: if languages.len() == 1 && languages[0] != "auto" {
-            Some(languages[0].clone())
-        } else {
-            None
-        },
-        prompt: None,
-    };
+    let config = TranscriptionConfig::from_languages(&languages);
 
     let transcription = whisper
         .transcribe(&audio_data, &config)

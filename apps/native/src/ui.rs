@@ -682,8 +682,8 @@ impl App {
                 name.as_str(),
                 "error" | "recording-error" | "dictation-error"
             ) {
-                // The shared error event may contain provider details; avoid displaying secrets.
-                self.status = "Dictation failed. Check the microphone and API settings.".into();
+                self.status = dictto_native::services::transcription::friendly_error(
+                    payload["message"].as_str().unwrap_or_default()).into();
             } else if matches!(
                 name.as_str(),
                 "recording-state" | "recording-state-changed" | "processing-state"

@@ -71,10 +71,11 @@ async fn cleanup_uses_custom_endpoint_and_parses_structured_text() {
 async fn warmup_posts_silent_wav_to_selected_model_and_discards_response() {
     let _activity = ACTIVITY_TEST.lock().await;
     let (base, request) = endpoint("{}");
-    super::warmup::send(&reqwest::Client::new(), &base, "local-whisper", "test-key").await.unwrap();
+    super::warmup::send(&reqwest::Client::new(), &base, "canary-1b-v2", "test-key", Some("fr")).await.unwrap();
     let request = request.join().unwrap();
     assert!(request.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
-    assert!(request.contains("local-whisper"));
+    assert!(request.contains("canary-1b-v2"));
+    assert!(request.contains("name=\"language\"\r\n\r\nfr"));
     assert!(request.contains("RIFF"));
     assert!(request.contains("WAVE"));
     assert!(request.to_lowercase().contains("authorization: bearer test-key"));
@@ -85,10 +86,10 @@ async fn repeated_warmup_reuses_the_completed_warmup() {
     let _activity = ACTIVITY_TEST.lock().await;
     let (base, request) = endpoint("{}");
     let client = reqwest::Client::new();
-    super::warmup::send(&client, &base, "local-whisper", "test-key").await.unwrap();
+    super::warmup::send(&client, &base, "local-whisper", "test-key", Some("fr")).await.unwrap();
     request.join().unwrap();
     // The endpoint has closed: a redundant POST would fail here.
-    super::warmup::send(&client, &base, "local-whisper", "test-key").await.unwrap();
+    super::warmup::send(&client, &base, "local-whisper", "test-key", Some("fr")).await.unwrap();
 }
 
 #[tokio::test]
@@ -121,7 +122,7 @@ async fn real_transcription_preempts_stalled_warmup() {
     });
     let cancelled_base = base.clone();
     let warmup = tokio::spawn(async move {
-        super::warmup::send(&reqwest::Client::new(), &base, "local-whisper", "key").await
+        super::warmup::send(&reqwest::Client::new(), &base, "local-whisper", "key", None).await
     });
     headers_received.await.unwrap();
     let (transcription_base, transcription_request) = endpoint(r#"{"text":"Bonjour"}"#);
@@ -147,5 +148,5 @@ async fn real_transcription_preempts_stalled_warmup() {
     eprintln!("real transcription completed in {:?} while warmup body was stalled", elapsed);
     // The cancelled model was not warmed: with its endpoint closed, a retry must fail.
     assert!(super::warmup::send(&reqwest::Client::new(), &cancelled_base,
-        "local-whisper", "key").await.is_err());
+        "local-whisper", "key", None).await.is_err());
 }

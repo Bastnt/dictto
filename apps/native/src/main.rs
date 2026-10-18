@@ -1,7 +1,9 @@
 #![windows_subsystem = "windows"]
 mod overlay;
 mod ui;
+mod diagnostics;
 fn main() {
+    let _ = diagnostics::initialize();
     unsafe {
         use windows::Win32::UI::HiDpi::*;
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);

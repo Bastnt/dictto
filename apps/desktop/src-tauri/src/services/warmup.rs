@@ -51,18 +51,22 @@ fn silent_wav() -> Vec<u8> {
     cursor.into_inner()
 }
 
-pub(super) async fn send(client: &reqwest::Client, base: &str, model: &str, key: &str) -> Result<(), reqwest::Error> {
+pub(super) async fn send(client: &reqwest::Client, base: &str, model: &str, key: &str, language: Option<&str>) -> Result<(), super::transcription::TranscriptionError> {
+    super::transcription::TranscriptionConfig { language: language.map(str::to_owned), prompt: None }.validate(model)?;
     let mut foreground = FOREGROUND.subscribe();
     let mut activity = ACTIVITY.lock().await;
     if foreground.has_changed().unwrap_or(true) || activity.is_warm(base, model) {
         return Ok(());
     }
+    log::info!("[warmup] Loading model {} (language={:?})", model, language);
     let file = reqwest::multipart::Part::bytes(silent_wav())
         .file_name("warmup.wav").mime_str("audio/wav").unwrap();
+    let mut form = reqwest::multipart::Form::new().text("model", model.to_owned()).part("file", file);
+    if let Some(language) = language { form = form.text("language", language.to_owned()); }
     let request = async {
         client.post(format!("{}/audio/transcriptions", base.trim_end_matches('/')))
             .bearer_auth(key)
-            .multipart(reqwest::multipart::Form::new().text("model", model.to_owned()).part("file", file))
+            .multipart(form)
             .timeout(Duration::from_secs(120)).send().await?.error_for_status()?.bytes().await?;
         Ok::<(), reqwest::Error>(())
     };
@@ -70,20 +74,22 @@ pub(super) async fn send(client: &reqwest::Client, base: &str, model: &str, key:
         biased;
         // Drop the background request and its lock before real audio is submitted.
         _ = foreground.changed() => return Ok(()),
-        result = request => result?,
+        result = request => result.map_err(|e| super::transcription::TranscriptionError::HttpError(e.to_string()))?,
     }
     activity.completed(base, model);
+    log::info!("[warmup] Model {} is ready", model);
     Ok(())
 }
 
 pub fn schedule(app: &tauri::AppHandle) {
     let state = app.state::<crate::AppState>();
-    let (base, model) = {
+    let (base, model, config) = {
         let db = state.db.lock().unwrap();
         if db.get_setting("transcription_warmup").as_deref() != Some("true") { return; }
         let Some(base) = db.get_setting("api_base_url") else { return; };
         let Some(model) = db.get_setting("transcription_model") else { return; };
-        (base, model)
+        let languages: Vec<String> = serde_json::from_str(&db.get_setting("languages").unwrap_or_default()).unwrap_or_default();
+        (base, model, super::transcription::TranscriptionConfig::from_languages(&languages))
     };
     if IN_FLIGHT.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
     let client = state.http_client.clone();
@@ -91,8 +97,8 @@ pub fn schedule(app: &tauri::AppHandle) {
         let _flight = Flight;
         let Ok(key) = super::db::keystore::get_api_key() else { return; };
         // Warmup never enters the dictation pipeline or emits user-facing events.
-        if send(&client, &base, &model, &key).await.is_err() {
-            log::debug!("Transcription warmup failed; normal dictation remains available");
+        if let Err(error) = send(&client, &base, &model, &key, config.language.as_deref()).await {
+            log::warn!("Transcription warmup failed: {}", error);
         }
     });
 }

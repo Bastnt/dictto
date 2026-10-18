@@ -191,6 +191,17 @@ fn cancel_recording(app: &tauri::AppHandle) {
 fn start_recording(app: &tauri::AppHandle) -> Option<u64> {
     let app_state = app.state::<crate::AppState>();
 
+    let validation = {
+        let db = app_state.db.lock().unwrap();
+        let languages: Vec<String> = serde_json::from_str(&db.get_setting("languages").unwrap_or_default()).unwrap_or_default();
+        super::transcription::TranscriptionConfig::from_languages(&languages)
+            .validate(&db.get_setting("transcription_model").unwrap_or_default())
+    };
+    if let Err(error) = validation {
+        let _ = app.emit("dictation-error", serde_json::json!({"message": error.to_string()}));
+        return None;
+    }
+
     // Step 1: Read DB settings (lock db, then drop)
     let (device_setting, limit_secs) = {
         let db = app_state.db.lock().unwrap();

@@ -161,7 +161,8 @@ impl State {
                 self.recording = false;
                 self.processing = false;
                 self.continuous = false;
-                self.error = "Dictation failed. Check API settings and the application log.".into()
+                self.error = dictto_native::services::transcription::friendly_error(
+                    value["message"].as_str().unwrap_or_default()).into()
             }
             _ => {}
         }
@@ -173,7 +174,7 @@ impl State {
 
     fn size(&self) -> (i32, i32) {
         if !self.error.is_empty() {
-            (ERROR_WIDTH, 48)
+            (ERROR_WIDTH, 80)
         } else if self.continuous {
             (CONTINUOUS_WIDTH, HEIGHT)
         } else {
@@ -553,6 +554,10 @@ mod tests {
         );
         assert!(state.active());
         assert!(!state.error.contains("secret"));
+        state.event("dictation-error", &serde_json::json!({"message":
+            "Canary requires an explicit supported language, such as fr or en"}));
+        assert!(state.error.contains("auto-detection"), "{}", state.error);
+        assert!(state.error.contains("Languages"));
         state.event(
             "recording-state-changed",
             &serde_json::json!({"state":"recording","mode":"continuous"}),
