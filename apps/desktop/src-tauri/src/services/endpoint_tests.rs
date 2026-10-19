@@ -150,3 +150,70 @@ async fn real_transcription_preempts_stalled_warmup() {
     assert!(super::warmup::send(&reqwest::Client::new(), &cancelled_base,
         "local-whisper", "key", None).await.is_err());
 }
+
+async fn transcription_sequence(statuses: &[u16]) -> (Result<super::transcription::TranscriptionResult, super::transcription::TranscriptionError>, Vec<String>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let statuses = statuses.to_vec();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for status in statuses {
+            let Ok(Ok((mut stream, _))) = tokio::time::timeout(Duration::from_secs(8), listener.accept()).await else { break; };
+            let mut bytes = Vec::new();
+            let mut buf = [0; 4096];
+            loop {
+                let n = stream.read(&mut buf).await.unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buf[..n]);
+                if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let header = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                    let length: usize = header.lines().find_map(|line| line.strip_prefix("content-length:"))
+                        .unwrap().trim().parse().unwrap();
+                    if bytes.len() >= end + 4 + length { break; }
+                }
+            }
+            requests.push(String::from_utf8(bytes).unwrap());
+            let body = if status == 200 { r#"{"text":"Bonjour"}"# } else { r#"{"error":"worker_unavailable"}"# };
+            let reply = format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            stream.write_all(reply.as_bytes()).await.unwrap();
+        }
+        requests
+    });
+    let engine = super::transcription::openai_api::OpenAIWhisper::with_client(
+        "key".into(), reqwest::Client::new(), base, "whisper-1".into());
+    let result = engine.transcribe(b"original-wav-audio", &TranscriptionConfig {
+        language: Some("fr".into()), prompt: Some("context".into()),
+    }).await;
+    (result, server.await.unwrap())
+}
+
+#[tokio::test]
+async fn transcription_retries_unavailable_server_twice_and_preserves_audio() {
+    let _activity = ACTIVITY_TEST.lock().await;
+    let (result, requests) = transcription_sequence(&[503, 503, 200]).await;
+    assert_eq!(result.expect("model should be ready on third attempt").text, "Bonjour");
+    assert_eq!(requests.len(), 3);
+    for request in requests {
+        assert!(request.contains("original-wav-audio"));
+        assert!(request.contains("whisper-1"));
+        assert!(request.contains("context"));
+        assert!(request.contains("name=\"language\"\r\n\r\nfr"));
+    }
+}
+
+#[tokio::test]
+async fn transcription_stops_after_three_server_failures() {
+    let _activity = ACTIVITY_TEST.lock().await;
+    let (result, requests) = transcription_sequence(&[503, 502, 503]).await;
+    assert!(result.err().unwrap().to_string().contains("503"));
+    assert_eq!(requests.len(), 3);
+}
+
+#[tokio::test]
+async fn transcription_does_not_retry_unauthorized_requests() {
+    let _activity = ACTIVITY_TEST.lock().await;
+    let (result, requests) = transcription_sequence(&[401]).await;
+    assert!(result.err().unwrap().to_string().contains("401"));
+    assert_eq!(requests.len(), 1);
+}

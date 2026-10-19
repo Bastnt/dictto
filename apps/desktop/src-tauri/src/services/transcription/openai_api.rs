@@ -23,7 +23,7 @@ impl OpenAIWhisper {
 }
 
 const TRANSCRIPTION_TIMEOUT: Duration = Duration::from_secs(120);
-const MAX_ATTEMPTS: u32 = 2;
+const MAX_ATTEMPTS: u32 = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 
 #[cfg(test)]
@@ -106,43 +106,39 @@ impl TranscriptionEngine for OpenAIWhisper {
                     if !resp.status().is_success() {
                         let status = resp.status();
                         let body = resp.text().await.unwrap_or_default();
-                        return Err(TranscriptionError::ApiError(format!(
-                            "Status {}: {}",
-                            status, body
-                        )));
+                        let retryable = status.is_server_error()
+                            || status == reqwest::StatusCode::REQUEST_TIMEOUT
+                            || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+                        let error = TranscriptionError::ApiError(format!("Status {}: {}", status, body));
+                        if !retryable || attempt == MAX_ATTEMPTS { return Err(error); }
+                        last_error = error;
+                    } else {
+                        let whisper_response: WhisperResponse = resp
+                            .json()
+                            .await
+                            .map_err(|e| TranscriptionError::ApiError(e.to_string()))?;
+
+                        activity.completed(&self.base_url, &self.model);
+                        return Ok(TranscriptionResult {
+                            text: whisper_response.text,
+                        });
                     }
-
-                    let whisper_response: WhisperResponse = resp
-                        .json()
-                        .await
-                        .map_err(|e| TranscriptionError::ApiError(e.to_string()))?;
-
-                    activity.completed(&self.base_url, &self.model);
-                    return Ok(TranscriptionResult {
-                        text: whisper_response.text,
-                    });
-                }
-                Err(e) if e.is_timeout() && attempt < MAX_ATTEMPTS => {
-                    log::debug!(
-                        "[transcription] Attempt {}/{} timed out, retrying in {}s...",
-                        attempt,
-                        MAX_ATTEMPTS,
-                        RETRY_DELAY.as_secs()
-                    );
-                    last_error = TranscriptionError::Timeout;
-                    tokio::time::sleep(RETRY_DELAY).await;
-                }
-                Err(e) if e.is_timeout() => {
-                    log::debug!(
-                        "[transcription] Attempt {}/{} timed out, no retries left",
-                        attempt, MAX_ATTEMPTS
-                    );
-                    return Err(TranscriptionError::Timeout);
                 }
                 Err(e) => {
-                    return Err(TranscriptionError::HttpError(e.to_string()));
+                    let retryable = e.is_timeout() || e.is_connect() || e.is_request();
+                    let error = if e.is_timeout() {
+                        TranscriptionError::Timeout
+                    } else {
+                        TranscriptionError::HttpError(e.to_string())
+                    };
+                    if !retryable || attempt == MAX_ATTEMPTS { return Err(error); }
+                    last_error = error;
                 }
             }
+            let delay = RETRY_DELAY * attempt;
+            log::debug!("[transcription] Attempt {}/{} failed: {}; retrying in {}s",
+                attempt, MAX_ATTEMPTS, last_error, delay.as_secs());
+            tokio::time::sleep(delay).await;
         }
 
         Err(last_error)
