@@ -36,12 +36,20 @@ pub struct RecordedAudio {
     pub released_at: Instant,
 }
 
+pub fn retryable_audio(recording: RecordedAudio, result: &Result<(), PipelineError>) -> Option<RecordedAudio> {
+    match result {
+        Err(PipelineError::NoApiKey | PipelineError::TranscriptionFailed(_)) => Some(recording),
+        _ => None,
+    }
+}
+
 pub async fn run_pipeline(
     app: &tauri::AppHandle,
-    recording: RecordedAudio,
+    recording: &RecordedAudio,
 ) -> Result<(), PipelineError> {
     let pipeline_start = Instant::now();
-    let RecordedAudio { data: audio_data, released_at } = recording;
+    let audio_data = &recording.data;
+    let released_at = recording.released_at;
     let audio_size_kb = audio_data.len() as f64 / 1024.0;
     log::info!(
         "[pipeline] Starting pipeline ({:.1} KB audio, {:?} since release including stop/encode and queue)",
@@ -160,6 +168,24 @@ pub async fn run_pipeline(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_audio_survives_repeated_attempts_until_success() {
+        let mut audio = RecordedAudio { data: vec![1, 2, 3], released_at: Instant::now() };
+        for _ in 0..3 {
+            audio = retryable_audio(audio, &Err(PipelineError::TranscriptionFailed("503".into())))
+                .expect("failed transcription must retain audio");
+            assert_eq!(audio.data, vec![1, 2, 3]);
+        }
+        assert!(retryable_audio(audio, &Ok(())).is_none());
+    }
+
+    #[test]
+    fn successful_transcription_is_not_retried_after_injection_failure() {
+        let audio = RecordedAudio { data: vec![1], released_at: Instant::now() };
+        assert!(retryable_audio(audio, &Err(PipelineError::InjectionFailed("clipboard".into()))).is_none());
+    }
+
+    use super::*;
     struct UnexpectedCleanup;
     #[async_trait::async_trait]
     impl super::LLMProcessor for UnexpectedCleanup {

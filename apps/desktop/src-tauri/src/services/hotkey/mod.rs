@@ -149,6 +149,14 @@ fn emit_pending_state(app: &tauri::AppHandle, pending: usize) {
     emit_state(app, if pending > 0 { "processing" } else { "idle" }, None);
 }
 
+fn take_retry_audio(audio: &mut Option<RecordedAudio>, pending: usize) -> Option<RecordedAudio> {
+    if pending > 0 { return None; }
+    audio.take().map(|mut audio| {
+        audio.released_at = std::time::Instant::now();
+        audio
+    })
+}
+
 /// Queue every completed recording for serial transcription and clipboard injection.
 fn enqueue_pipeline(
     app: &tauri::AppHandle,
@@ -188,7 +196,7 @@ fn cancel_recording(app: &tauri::AppHandle) {
 
 /// Start audio recording with the configured device.
 /// Returns the recording limit in seconds, or None on failure.
-fn start_recording(app: &tauri::AppHandle) -> Option<u64> {
+fn start_recording(app: &tauri::AppHandle, preload: bool) -> Option<u64> {
     let app_state = app.state::<crate::AppState>();
 
     let validation = {
@@ -237,7 +245,7 @@ fn start_recording(app: &tauri::AppHandle) -> Option<u64> {
     }
     drop(recorder); // explicit drop to release mutex before play_sound acquires db mutex
 
-    crate::services::warmup::schedule(app);
+    if preload { crate::services::warmup::schedule(app); }
     play_sound(Sound::Start, app);
     Some(limit_secs)
 }
@@ -301,11 +309,12 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
         // Channel for tap timer expiry notifications
         let (timer_tx, mut timer_rx) = tokio::sync::mpsc::unbounded_channel::<&'static str>();
         let (pipeline_tx, mut pipeline_rx) = tokio::sync::mpsc::unbounded_channel::<RecordedAudio>();
-        let (completed_tx, mut completed_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (completed_tx, mut completed_rx) = tokio::sync::mpsc::unbounded_channel::<Option<RecordedAudio>>();
         let pipeline_app = app_handle.clone();
         tauri::async_runtime::spawn(async move {
             while let Some(audio) = pipeline_rx.recv().await {
-                match crate::services::pipeline::run_pipeline(&pipeline_app, audio).await {
+                let result = crate::services::pipeline::run_pipeline(&pipeline_app, &audio).await;
+                match &result {
                     Ok(()) => {}
                     Err(error) => {
                         log::error!("[hotkey] Pipeline error: {}", error);
@@ -315,10 +324,11 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                         );
                     }
                 }
-                let _ = completed_tx.send(());
+                let _ = completed_tx.send(crate::services::pipeline::retryable_audio(audio, &result));
             }
         });
         let mut pending_pipelines = 0usize;
+        let mut retry_audio: Option<RecordedAudio> = None;
 
         loop {
             tokio::select! {
@@ -334,7 +344,7 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                             emit_state(&app_handle, "recording", Some("hold"));
 
                             // EAGER START: begin recording immediately on key-down
-                            if let Some(limit_secs) = start_recording(&app_handle) {
+                            if let Some(limit_secs) = start_recording(&app_handle, retry_audio.is_none() && pending_pipelines == 0) {
 
                                 // Spawn recording limit timer
                                 let timer_handle_clone = timer_handle.clone();
@@ -475,7 +485,11 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                             // Stop WASAPI stream and discard audio buffer
                             cancel_recording(&app_handle);
                             state = State::Idle;
-                            emit_pending_state(&app_handle, pending_pipelines);
+                            if let Some(audio) = take_retry_audio(&mut retry_audio, pending_pipelines) {
+                                enqueue_pipeline(&app_handle, Some(audio), &pipeline_tx, &mut pending_pipelines);
+                            } else {
+                                emit_pending_state(&app_handle, pending_pipelines);
+                            }
                         }
                         (State::PendingHold, "limit_expired")
                         | (State::WaitingSecondTap, "limit_expired")
@@ -500,7 +514,7 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                     match (&state, action) {
                         (State::Idle, BarAction::Start) => {
                             // UI click → start continuous recording directly
-                            if let Some(limit_secs) = start_recording(&app_handle) {
+                            if let Some(limit_secs) = start_recording(&app_handle, true) {
                                 emit_state(&app_handle, "recording", Some("continuous"));
 
                                 // Spawn recording limit timer
@@ -554,10 +568,11 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                 }
 
                 pipeline_completed = completed_rx.recv() => {
-                    if pipeline_completed.is_none() {
+                    let Some(failed_audio) = pipeline_completed else {
                         log::error!("[hotkey] Pipeline worker stopped");
                         break;
-                    }
+                    };
+                    retry_audio = failed_audio;
                     pending_pipelines = pending_pipelines.saturating_sub(1);
                     if matches!(state, State::Idle) {
                         emit_pending_state(&app_handle, pending_pipelines);
@@ -591,5 +606,22 @@ pub fn send_bar_stop() {
 pub fn send_bar_cancel() {
     if let Some(tx) = BAR_ACTION_TX.get() {
         let _ = tx.send(BarAction::Cancel);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_waits_for_pending_transcriptions_and_cannot_be_queued_twice() {
+        let mut audio = Some(RecordedAudio {
+            data: vec![1, 2, 3],
+            released_at: std::time::Instant::now(),
+        });
+        assert!(take_retry_audio(&mut audio, 1).is_none());
+        assert!(audio.is_some());
+        assert_eq!(take_retry_audio(&mut audio, 0).unwrap().data, vec![1, 2, 3]);
+        assert!(take_retry_audio(&mut audio, 0).is_none());
     }
 }
