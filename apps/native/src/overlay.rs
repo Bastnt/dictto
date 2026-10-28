@@ -334,9 +334,24 @@ fn dark_theme() -> bool {
 
 unsafe fn paint(hwnd: HWND, state: &State) {
     let mut ps = PAINTSTRUCT::default();
-    let dc = BeginPaint(hwnd, &mut ps);
+    let target_dc = BeginPaint(hwnd, &mut ps);
     let mut bounds = RECT::default();
     let _ = GetClientRect(hwnd, &mut bounds);
+    let buffer_dc = CreateCompatibleDC(Some(target_dc));
+    let buffer_bitmap = CreateCompatibleBitmap(target_dc, bounds.right, bounds.bottom);
+    let buffered = !buffer_dc.0.is_null() && !buffer_bitmap.0.is_null();
+    let old_bitmap = if buffered {
+        SelectObject(buffer_dc, buffer_bitmap.into())
+    } else {
+        if !buffer_bitmap.0.is_null() {
+            let _ = DeleteObject(buffer_bitmap.into());
+        }
+        if !buffer_dc.0.is_null() {
+            let _ = DeleteDC(buffer_dc);
+        }
+        HGDIOBJ::default()
+    };
+    let dc = if buffered { buffer_dc } else { target_dc };
     let black = CreateSolidBrush(COLORREF(0));
     FillRect(dc, &bounds, black);
     let _ = DeleteObject(black.into());
@@ -464,6 +479,22 @@ unsafe fn paint(hwnd: HWND, state: &State) {
     }
     let _ = SelectObject(dc, previous_font);
     let _ = DeleteObject(font.into());
+    if buffered {
+        let _ = BitBlt(
+            target_dc,
+            0,
+            0,
+            bounds.right,
+            bounds.bottom,
+            Some(buffer_dc),
+            0,
+            0,
+            SRCCOPY,
+        );
+        let _ = SelectObject(buffer_dc, old_bitmap);
+        let _ = DeleteObject(buffer_bitmap.into());
+        let _ = DeleteDC(buffer_dc);
+    }
     let _ = EndPaint(hwnd, &ps);
 }
 
