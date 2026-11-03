@@ -79,6 +79,18 @@ mod tests {
         assert_eq!(t.event(0xa0, false), Some(false));
     }
     #[test]
+    fn original_three_modifier_dictation_chord_works_in_either_order() {
+        for keys in [[0xa2, 0xa4, 0x5b], [0x5c, 0xa5, 0xa3]] {
+            let mut tracker = Tracker::default();
+            tracker.chord = Chord::parse("Ctrl+Alt+Win").unwrap();
+            assert_eq!(tracker.event(keys[0], true), None);
+            assert_eq!(tracker.event(keys[1], true), None);
+            assert_eq!(tracker.event(keys[2], true), Some(true));
+            assert_eq!(tracker.event(keys[2], true), None);
+            assert_eq!(tracker.event(keys[0], false), Some(false));
+        }
+    }
+    #[test]
     fn releasing_one_of_two_control_keys_keeps_chord() {
         let mut t = Tracker::default();
         t.event(0xa2, true); t.event(0xa3, true);

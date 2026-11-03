@@ -100,24 +100,23 @@ unsafe extern "system" fn hook_proc(
 
 /// Spawn a dedicated OS thread with a message loop for the keyboard hook.
 #[cfg(windows)]
-fn spawn_hook_thread() {
+fn spawn_hook_thread() -> Result<(), Box<dyn std::error::Error>> {
+    let (ready, registered) = std::sync::mpsc::sync_channel(1);
     std::thread::Builder::new()
         .name("hotkey-hook".into())
-        .spawn(|| unsafe {
-            let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0);
-
-            if let Err(e) = &hook {
-                log::error!("Failed to install keyboard hook: {}", e);
-                return;
+        .spawn(move || unsafe {
+            match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) {
+                Ok(_) => { let _ = ready.send(Ok(())); }
+                Err(error) => {
+                    let _ = ready.send(Err(error));
+                    return;
+                }
             }
-
-            // Message loop — required for WH_KEYBOARD_LL to work
             let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                // Just pump messages; the hook proc handles everything
-            }
-        })
-        .expect("Failed to spawn hotkey hook thread");
+            while GetMessageW(&mut msg, None, 0, 0).0 > 0 {}
+        })?;
+    registered.recv()??;
+    Ok(())
 }
 
 /// Emit structured recording state event to frontend.
@@ -212,7 +211,7 @@ fn cancel_recording(app: &tauri::AppHandle) {
 
 /// Start audio recording with the configured device.
 /// Returns the recording limit in seconds, or None on failure.
-fn start_recording(app: &tauri::AppHandle, preload: bool) -> Option<u64> {
+fn start_recording(app: &tauri::AppHandle, preload: bool, pending: usize) -> Option<u64> {
     let app_state = app.state::<crate::AppState>();
 
     let validation = {
@@ -222,6 +221,7 @@ fn start_recording(app: &tauri::AppHandle, preload: bool) -> Option<u64> {
             .validate(&db.get_setting("transcription_model").unwrap_or_default())
     };
     if let Err(error) = validation {
+        emit_pending_state(app, pending);
         let _ = app.emit("dictation-error", serde_json::json!({"message": error.to_string()}));
         return None;
     }
@@ -256,7 +256,10 @@ fn start_recording(app: &tauri::AppHandle, preload: bool) -> Option<u64> {
     // Step 3: Lock recorder and start (AFTER reading device_monitor)
     let mut recorder = app_state.audio_recorder.lock().unwrap();
     if let Err(e) = recorder.start(device_selection) {
+        drop(recorder);
         log::error!("[hotkey] Failed to start recording: {}", e);
+        emit_pending_state(app, pending);
+        let _ = app.emit("dictation-error", serde_json::json!({"message":e.to_string()}));
         return None;
     }
     drop(recorder); // explicit drop to release mutex before play_sound acquires db mutex
@@ -279,13 +282,12 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
     configure(chord::Chord::parse(&value).unwrap_or_else(|_| chord::Chord::parse("Ctrl+Win").unwrap()));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HotkeyEvent>();
 
+    #[cfg(windows)]
+    spawn_hook_thread()?;
     HOTKEY_TX
         .set(tx)
         .map_err(|_| "Hotkey channel already initialized")?;
-
-    // Spawn OS thread with WH_KEYBOARD_LL hook + message loop
-    #[cfg(windows)]
-    spawn_hook_thread();
+    log::info!("Registered dictation shortcut {value}");
 
     // Channel for bar button actions (stop/cancel from frontend)
     let (bar_tx, mut bar_rx) = tokio::sync::mpsc::unbounded_channel::<BarAction>();
@@ -397,7 +399,7 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                             emit_state(&app_handle, "recording", Some("hold"));
 
                             // EAGER START: begin recording immediately on key-down
-                            if let Some(limit_secs) = start_recording(&app_handle, retry_audio.is_none() && pending_pipelines == 0) {
+                            if let Some(limit_secs) = start_recording(&app_handle, retry_audio.is_none() && pending_pipelines == 0, pending_pipelines) {
 
                                 // Spawn recording limit timer
                                 let timer_handle_clone = timer_handle.clone();
@@ -425,9 +427,6 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                                 }));
 
                                 state = State::PendingHold;
-                            } else {
-                                // start_recording() failed — stay idle
-                                emit_pending_state(&app_handle, pending_pipelines);
                             }
                         }
                         (State::Idle, HotkeyEvent::Released) => {
@@ -576,7 +575,7 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                     match (&state, action) {
                         (State::Idle, BarAction::Start) => {
                             // UI click → start continuous recording directly
-                            if let Some(limit_secs) = start_recording(&app_handle, true) {
+                            if let Some(limit_secs) = start_recording(&app_handle, true, pending_pipelines) {
                                 emit_state(&app_handle, "recording", Some("continuous"));
 
                                 // Spawn recording limit timer

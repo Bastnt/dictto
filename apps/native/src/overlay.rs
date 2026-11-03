@@ -595,6 +595,9 @@ mod tests {
             "Canary requires an explicit supported language, such as fr or en"}));
         assert!(state.error.contains("auto-detection"), "{}", state.error);
         assert!(state.error.contains("Languages"));
+        state.event("dictation-error", &serde_json::json!({"message":"Audio device error: No input device found"}));
+        assert!(state.error.contains("microphone"));
+        assert!(state.error.contains("Remote Desktop"));
         state.event(
             "recording-state-changed",
             &serde_json::json!({"state":"recording","mode":"continuous"}),

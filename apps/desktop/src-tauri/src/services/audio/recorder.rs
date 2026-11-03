@@ -918,6 +918,8 @@ unsafe fn resolve_auto_fallback(
             log::warn!("[AudioRecorder] eConsole default not found, trying eCommunications");
             enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications)
         })
+        .or_else(|_| enumerator.GetDefaultAudioEndpoint(eCapture, eMultimedia))
+        .or_else(|_| enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)?.Item(0))
         .map_err(|_| AudioError::NoDevice)
 }
 

@@ -28,7 +28,11 @@ impl TranscriptionConfig {
 
 pub fn friendly_error(message: &str) -> &'static str {
     let lower = message.to_lowercase();
-    if lower.contains("auto-detection") || lower.contains("explicit supported language") {
+    if lower.contains("no input device") {
+        "Windows has no microphone available. Connect one or enable microphone recording in Remote Desktop, then reconnect."
+    } else if lower.contains("audio device error") {
+        "Cannot open the microphone. Check the input device in Settings > Audio and Windows microphone access."
+    } else if lower.contains("auto-detection") || lower.contains("explicit supported language") {
         "Canary does not support auto-detection. Select one language in Settings > General > Languages."
     } else if lower.contains("unknown_preset") {
         "Transcription model not found. Check Settings > API."
