@@ -78,7 +78,7 @@ def capture():
     matches = []
     for i in range(devices()):
         info = InputCaps()
-        if not caps(i, C.byref(info), C.sizeof(info)) and info.name.lower().startswith("dictto microphone"):
+        if not caps(i, C.byref(info), C.sizeof(info)) and "dictto microphone" in info.name.lower():
             matches.append((i, info.name))
     if len(matches) != 1:
         raise RuntimeError(f"expected one Dictto Microphone capture endpoint, found {matches}")
