@@ -102,7 +102,7 @@ impl NativeOverlay {
     pub fn send(&self, event: &str, payload: Value) {
         if !matches!(
             event,
-            "recording-state-changed" | "waveform-data" | "dictation-error"
+            "recording-state-changed" | "waveform-data" | "dictation-error" | "speech-error"
         ) {
             return;
         }
@@ -144,7 +144,7 @@ impl State {
                 self.recording = value["state"] == "recording";
                 self.processing = value["state"] == "processing";
                 self.continuous = self.recording && value["mode"] == "continuous";
-                if self.recording {
+                if self.recording || self.processing {
                     self.error.clear();
                 }
             }
@@ -156,6 +156,12 @@ impl State {
                         .collect();
                     self.bars = fit_bars(&samples, 24);
                 }
+            }
+            "speech-error" => {
+                self.recording = false;
+                self.processing = false;
+                self.continuous = false;
+                self.error = value["message"].as_str().unwrap_or("Speech failed").to_owned();
             }
             "dictation-error" => {
                 self.recording = false;
@@ -204,7 +210,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         return LRESULT(0);
                     }
                     Message::Event(name, value) => {
-                        if name == "dictation-error" {
+                        if name == "dictation-error" || name == "speech-error" {
                             SetTimer(Some(hwnd), 1, 15000, None);
                         }
                         if name == "recording-state-changed" && value["state"] == "recording" {

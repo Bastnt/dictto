@@ -21,6 +21,7 @@ impl NativeRuntime {
     ) -> Result<Self, String> {
         crate::host::async_runtime::initialize()?;
         let state = Arc::new(AppState {
+            sample_path: data_dir.join("voice-sample.wav"),
             audio_recorder: Mutex::new(services::audio::recorder::AudioRecorder::new()),
             db: Mutex::new(services::db::Database::new(data_dir).map_err(|e| e.to_string())?),
             http_client: reqwest::Client::builder()
@@ -98,15 +99,24 @@ impl NativeRuntime {
                 services::autostart::disable_autostart()?;
             }
         }
-        self.inner
-            .state
-            .db
-            .lock()
-            .map_err(|e| e.to_string())?
-            .set_setting(key, value)
-            .map_err(|e| e.to_string())?;
-        if let Some(chord) = chord {
-            services::hotkey::configure(chord);
+        {
+            let db = self.inner.state.db.lock().map_err(|e| e.to_string())?;
+            let bindings = if key == "hotkey"
+                || crate::speech::BINDINGS.iter().any(|(name, _)| *name == key)
+            {
+                let mut settings = db.get_all_settings().map_err(|e| e.to_string())?;
+                settings.insert(key.into(), value.into());
+                Some(crate::speech::parse_bindings(&settings, true)?)
+            } else {
+                None
+            };
+            db.set_setting(key, value).map_err(|e| e.to_string())?;
+            if let Some(bindings) = bindings {
+                crate::speech::configure(bindings);
+            }
+            if let Some(chord) = chord {
+                services::hotkey::configure(chord);
+            }
         }
         self.inner
             .app
@@ -115,6 +125,25 @@ impl NativeRuntime {
                 serde_json::json!({"key":key, "value":value}),
             )
             .map_err(|e| e.to_string())
+    }
+    pub fn discover_speech_models(&self, generation: u64) {
+        let runtime = self.clone();
+        crate::host::async_runtime::spawn(async move {
+            let result = async {
+                let settings = runtime.get_settings()?;
+                let base = settings
+                    .get("api_base_url")
+                    .ok_or("Set an API base URL first")?;
+                let key = services::db::keystore::get_api_key()?;
+                crate::speech_api::discover(&runtime.inner.state.http_client, base, &key).await
+            }
+            .await;
+            let payload = match result {
+                Ok(models) => serde_json::json!({"generation": generation, "models": models}),
+                Err(error) => serde_json::json!({"generation": generation, "error": error}),
+            };
+            let _ = runtime.inner.app.emit("speech-catalog", payload);
+        });
     }
     pub fn has_key(&self) -> bool {
         services::db::keystore::get_api_key().is_ok()
@@ -161,6 +190,7 @@ impl NativeRuntime {
     }
     pub fn shutdown(&self) {
         self.set_hotkey_capture(true);
+        self.cancel_recording();
         if let Ok(mut recorder) = self.inner.state.audio_recorder.lock() {
             let mut replacement = services::audio::recorder::AudioRecorder::new();
             replacement.set_app_handle(self.inner.app.clone());

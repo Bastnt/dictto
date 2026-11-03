@@ -4,6 +4,10 @@ use std::collections::BTreeSet;
 pub struct Chord { keys: BTreeSet<u16> }
 
 impl Chord {
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.keys.is_subset(&other.keys) || other.keys.is_subset(&self.keys)
+    }
+
     pub fn parse(value: &str) -> Result<Self, String> {
         let mut keys = BTreeSet::new();
         for part in value.split('+') {

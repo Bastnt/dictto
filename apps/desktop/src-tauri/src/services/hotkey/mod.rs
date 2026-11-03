@@ -6,6 +6,10 @@ use crate::services::audio::device_monitor::DeviceSelection;
 use crate::services::sound::{play_sound, Sound};
 use crate::services::pipeline::RecordedAudio;
 pub mod chord;
+#[cfg(not(feature = "tauri-host"))]
+mod speech_session;
+#[cfg(not(feature = "tauri-host"))]
+use speech_session::{speech_result, SpeechSession};
 static TRACKER: OnceLock<Mutex<chord::Tracker>> = OnceLock::new();
 
 fn tracker() -> &'static Mutex<chord::Tracker> {
@@ -26,6 +30,8 @@ pub fn configure(value: chord::Chord) {
 
 #[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn set_hotkey_capture(active: bool) {
+    #[cfg(not(feature = "tauri-host"))]
+    crate::speech::suspend(active);
     let mut tracker = tracker().lock().unwrap();
     send_transition(tracker.reset());
     tracker.suspended = active;
@@ -44,6 +50,12 @@ type AsyncJoinHandle = tauri::async_runtime::JoinHandle<()>;
 // --- Hook → Tauri communication ---
 
 enum HotkeyEvent {
+    #[cfg(not(feature = "tauri-host"))]
+    Speech(crate::speech::Action),
+    #[cfg(not(feature = "tauri-host"))]
+    SpeechLimit(u64),
+    #[cfg(not(feature = "tauri-host"))]
+    SpeechDone(u64, Result<(),String>),
     Pressed,
     Released,
 }
@@ -75,6 +87,10 @@ unsafe extern "system" fn hook_proc(
         let is_up = wparam.0 == WM_KEYUP as usize || wparam.0 == WM_SYSKEYUP as usize;
 
         if is_down || is_up {
+            #[cfg(not(feature = "tauri-host"))]
+            if let (Some(action),Some(tx)) = (crate::speech::key_event(vk,is_down),HOTKEY_TX.get()) {
+                let _=tx.send(HotkeyEvent::Speech(action));
+            }
             send_transition(tracker().lock().unwrap().event(vk, is_down));
         }
     }
@@ -257,6 +273,8 @@ const DOUBLE_TAP_WINDOW: std::time::Duration = std::time::Duration::from_millis(
 
 pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let state = app.state::<crate::AppState>();
+    #[cfg(not(feature = "tauri-host"))]
+    crate::speech::configure(crate::speech::parse_bindings(&state.db.lock().unwrap().get_all_settings()?, false)?);
     let value = state.db.lock().unwrap().get_setting("hotkey").unwrap_or_else(|| "Ctrl+Win".into());
     configure(chord::Chord::parse(&value).unwrap_or_else(|_| chord::Chord::parse("Ctrl+Win").unwrap()));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HotkeyEvent>();
@@ -303,6 +321,10 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
             }
         }
 
+        #[cfg(not(feature = "tauri-host"))]
+        let mut speech: Option<SpeechSession> = None;
+        #[cfg(not(feature = "tauri-host"))]
+        let mut speech_generation = 0u64;
         let mut state = State::Idle;
         // Timer for tap/hold discrimination and double-tap window
         let mut tap_timer: Option<AsyncJoinHandle> = None;
@@ -335,7 +357,38 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                 hotkey_event = rx.recv() => {
                     let Some(event) = hotkey_event else { break };
 
+                    #[cfg(not(feature = "tauri-host"))]
+                    match event {
+                        HotkeyEvent::Speech(action) => {
+                            if let Some(session) = speech.take() {
+                                if session.action == action {
+                                    speech = session.stop(&app_handle, false).await;
+                                } else { speech = Some(session); }
+                            } else if matches!(state,State::Idle) && pending_pipelines == 0 {
+                                speech_generation += 1;
+                                speech = SpeechSession::start(action,speech_generation,&app_handle);
+                            }
+                            continue;
+                        }
+                        HotkeyEvent::SpeechLimit(id) => {
+                            if speech.as_ref().is_some_and(|s|s.id == id && s.recording) {
+                                speech = speech.take().unwrap().stop(&app_handle,false).await;
+                            }
+                            continue;
+                        }
+                        HotkeyEvent::SpeechDone(id,result) => {
+                            if speech.as_ref().is_some_and(|s|s.id == id) {
+                                speech.take();
+                                speech_result(&app_handle,result);
+                            }
+                            continue;
+                        }
+                        _ if speech.is_some() => continue,
+                        _ => {}
+                    }
                     match (&state, event) {
+                        #[cfg(not(feature = "tauri-host"))]
+                        (_, HotkeyEvent::Speech(_) | HotkeyEvent::SpeechLimit(_) | HotkeyEvent::SpeechDone(_, _)) => unreachable!(),
                         // --- IDLE ---
                         (State::Idle, HotkeyEvent::Pressed) => {
                             log::debug!("[hotkey] {} + Pressed → starting recording", state.name());
@@ -511,6 +564,15 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                 bar_event = bar_rx.recv() => {
                     let Some(action) = bar_event else { break };
 
+                    #[cfg(not(feature = "tauri-host"))]
+                    if let Some(session) = speech.take() {
+                        speech = match action {
+                            BarAction::Cancel => session.stop(&app_handle,true).await,
+                            BarAction::Stop => session.stop(&app_handle,false).await,
+                            BarAction::Start => Some(session),
+                        };
+                        continue;
+                    }
                     match (&state, action) {
                         (State::Idle, BarAction::Start) => {
                             // UI click → start continuous recording directly
