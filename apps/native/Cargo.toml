@@ -16,6 +16,7 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.13", features = ["json", "multipart"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
 hound = "3.5"
+ring = "0.17"
 enigo = "0.6"
 arboard = "3"
 sys-locale = "0.3.2"

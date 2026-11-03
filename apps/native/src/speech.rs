@@ -413,6 +413,7 @@ fn selection_or_clipboard() -> Result<String, String> {
     })
 }
 
+pub(crate) mod cache;
 mod playback;
 use playback::play;
 

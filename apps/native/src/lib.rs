@@ -11,6 +11,8 @@ pub use services::audio::MicrophoneInfo;
 
 use std::sync::{Arc, Mutex};
 pub struct AppState {
+    pub(crate) speech_cache: Mutex<Option<speech::cache::Cache>>,
+    pub(crate) speech_audio_dir: std::path::PathBuf,
     pub sample_path: std::path::PathBuf,
     pub audio_recorder: Mutex<services::audio::recorder::AudioRecorder>,
     pub db: Mutex<services::db::Database>,

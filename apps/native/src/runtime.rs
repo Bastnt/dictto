@@ -20,7 +20,14 @@ impl NativeRuntime {
         sink: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
     ) -> Result<Self, String> {
         crate::host::async_runtime::initialize()?;
+        let speech_audio_dir =
+            std::path::absolute(data_dir.join("Speech Audio")).map_err(|e| e.to_string())?;
+        let speech_cache = crate::speech::cache::Cache::new(speech_audio_dir.clone())
+            .map_err(|e| log::warn!("Could not open speech audio folder: {e}"))
+            .ok();
         let state = Arc::new(AppState {
+            speech_cache: Mutex::new(speech_cache),
+            speech_audio_dir,
             sample_path: data_dir.join("voice-sample.wav"),
             audio_recorder: Mutex::new(services::audio::recorder::AudioRecorder::new()),
             db: Mutex::new(services::db::Database::new(data_dir).map_err(|e| e.to_string())?),
@@ -75,6 +82,9 @@ impl NativeRuntime {
         }
         services::warmup::schedule(&self.inner.app);
         Ok(())
+    }
+    pub fn speech_audio_dir(&self) -> PathBuf {
+        self.inner.state.speech_audio_dir.clone()
     }
     pub fn get_settings(&self) -> Result<HashMap<String, String>, String> {
         self.inner
