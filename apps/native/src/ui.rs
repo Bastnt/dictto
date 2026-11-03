@@ -1199,6 +1199,13 @@ mod tests {
                 assert!(!IsWindowEnabled(app.control(610)).as_bool());
                 assert!(IsWindow(Some(app.control(624))).as_bool());
                 assert_eq!(app.text(624), "Open audio folder");
+                assert_eq!(app.runtime.get_settings().unwrap()["tts_virtual_mic"], "false");
+                SendMessageW(app.control(625), BM_SETCHECK, Some(WPARAM(1)), None);
+                app.command(625, BN_CLICKED);
+                assert_eq!(app.runtime.get_settings().unwrap()["tts_virtual_mic"], "true");
+                SendMessageW(app.control(625), BM_SETCHECK, Some(WPARAM(0)), None);
+                app.command(625, BN_CLICKED);
+                assert_eq!(app.runtime.get_settings().unwrap()["tts_virtual_mic"], "false");
                 let discovery = |app: &mut App, models: Value| {
                     events_tx.send(("speech-catalog".into(), serde_json::json!({
                         "generation": app.catalog_generation, "models": models

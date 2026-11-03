@@ -226,7 +226,10 @@ impl App {
             .map(|(k, v)| format!("{k} ({v})"))
             .collect::<Vec<_>>()
             .join(", ");
-        self.label(&hint, [20, 317, 614, 78]);
+        self.label(&hint, [20, 313, 614, 31]);
+        let mic_enabled = self.drafts.get("tts_virtual_mic").is_some_and(|v| v == "true");
+        self.check(625, "Send speech to Dictto Microphone", mic_enabled, [20, 348, 614, 24]);
+        self.label("Temporarily switches the Windows communications microphone during speech.", [20, 376, 614, 21]);
     }
 
     pub(super) unsafe fn capture_engine_draft(&mut self) {
@@ -293,6 +296,10 @@ impl App {
                     }
                     Err(error) => self.status = error,
                 }
+            }
+            (625, BN_CLICKED) => {
+                let enabled = SendMessageW(self.control(625), BM_GETCHECK, None, None).0 != 0;
+                self.persist("tts_virtual_mic", if enabled { "true" } else { "false" });
             }
             (624, BN_CLICKED) => {
                 use std::os::windows::ffi::OsStrExt;

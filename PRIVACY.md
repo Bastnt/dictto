@@ -16,6 +16,8 @@ Dictto is a privacy-first voice-to-text app. Dictto sends audio and text to the 
 
 In Dictto Native, recording a clone sample saves a WAV locally. Each clone request uploads that sample with the text to synthesize. Speech-to-speech sends the new recording for transcription and sends the resulting text for synthesis. The speech-to-speech transcript stays in memory. Read-aloud uses the selection or clipboard text as input. Dictto caches the synthesized audio from all three actions in the local Speech Audio folder. It saves each complete result as one WAV and keeps up to six results. Replaying a cached result refreshes its recency. Adding a seventh result evicts the least recently used one. The folder stores no transcripts or copies of the input text.
 
+When virtual microphone routing is enabled, Dictto supplies synthesized audio to Windows applications listening to Dictto Microphone. During a temporary switch, Dictto stores the original and temporary communications capture endpoint IDs locally so it can restore the previous input after an interruption.
+
 ## Your API Key (BYOK)
 
 Dictto uses a **Bring Your Own Key** model:

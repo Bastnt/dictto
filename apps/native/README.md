@@ -75,6 +75,23 @@ its place in the cache. A new result replaces the least recently used one
 when the folder is full. Transcripts and selected or clipboard text are not
 saved alongside these files.
 
+### Send speech to Discord
+
+Install the Dictto Microphone capture driver and select **Default** as the input
+in Discord. Leave your normal microphone selected as the Windows default
+communications input. Enable **Speech → Send speech to Dictto Microphone** in
+Dictto. The existing speech shortcuts then send generated or cached speech to
+that input. Turning the checkbox off returns speech to local playback.
+
+Dictto changes only the communications capture role, once synthesized audio is
+ready. It waits up to eight seconds for an app to open the virtual input before
+sending the first sample. When speech drains, is cancelled, or the desktop
+locks or disconnects, Dictto restores the previous input if its own endpoint
+is still selected. A manual input change takes precedence. The previous
+endpoint ID is journaled for recovery after an interrupted exit. If the driver
+or an existing communications input is unavailable in this session, Dictto
+reports the problem without rerouting the microphone.
+
 Developer checks:
 
 ```powershell

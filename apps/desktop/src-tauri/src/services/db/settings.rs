@@ -10,6 +10,7 @@ pub fn default_settings() -> Vec<(&'static str, &'static str)> {
     vec![
         ("hotkey", "Ctrl+Win"),
         ("tts_model", ""),
+        ("tts_virtual_mic", "false"),
         ("tts_engine_options", "{}"),
         ("transcription_engine", "openai_api"),
         ("llm_provider", "openai_gpt"),
