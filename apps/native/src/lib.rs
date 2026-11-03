@@ -1,4 +1,5 @@
 pub mod host;
+pub mod speech_api;
 #[path = "../../desktop/src-tauri/src/services/mod.rs"]
 pub mod services;
 #[path = "../../desktop/src-tauri/src/instance.rs"]
