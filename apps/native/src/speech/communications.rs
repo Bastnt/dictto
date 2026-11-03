@@ -111,22 +111,19 @@ unsafe fn belongs_to_driver(id: &str) -> bool {
 }
 unsafe fn branded_capture(device: &IMMDevice) -> bool {
     use windows::Win32::Foundation::PROPERTYKEY;
-    use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToUInt32};
+    use windows::Win32::System::Com::StructuredStorage::PropVariantToUInt32;
     use windows::Win32::System::Variant::VT_UI4;
     let key = PROPERTYKEY {
         fmtid: GUID::from_u128(0x4f3ec4fb_1178_4adb_9313_8f584b69fb2d),
         pid: 2,
     };
-    let Ok(mut value) = device
+    let Ok(value) = device
         .OpenPropertyStore(STGM_READ)
         .and_then(|store| store.GetValue(&key))
     else {
         return false;
     };
-    let matches =
-        value.Anonymous.Anonymous.vt == VT_UI4 && PropVariantToUInt32(&value).is_ok_and(|v| v == 1);
-    let _ = PropVariantClear(&mut value);
-    matches
+    value.Anonymous.Anonymous.vt == VT_UI4 && PropVariantToUInt32(&value).is_ok_and(|v| v == 1)
 }
 
 impl Defaults for WindowsDefaults {
@@ -255,10 +252,13 @@ pub(super) fn acquire(path: &Path, defaults: &impl Defaults) -> Result<String, S
         file.sync_all().map_err(|e| e.to_string())?;
     }
     fs::rename(&pending, path).map_err(|e| e.to_string())?;
-    if defaults.current()? != saved.original {
-        // No policy write was issued. The user may have selected the virtual device themselves.
+    let current = defaults.current();
+    if current.as_ref().ok() != Some(&saved.original) {
+        // No policy write was issued; the endpoint can disappear or be selected manually here.
         fs::remove_file(path).map_err(|e| e.to_string())?;
-        return Err("The communications microphone changed before routing began.".into());
+        return Err(current.err().unwrap_or_else(|| {
+            "The communications microphone changed before routing began.".into()
+        }));
     }
     if let Err(error) = defaults.set(&target) {
         if let Err(restore) = recover(path, defaults) {
@@ -330,6 +330,34 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("dictto-user-mic-{}.json", std::process::id()));
         assert!(acquire(&path, &Changed(0.into())).is_err());
+        assert!(!path.exists());
+    }
+    #[test]
+    fn input_disappearing_before_switch_leaves_no_journal() {
+        struct Vanished(std::cell::Cell<bool>);
+        impl Defaults for Vanished {
+            fn current(&self) -> Result<String, String> {
+                if self.0.replace(true) {
+                    Err("Unplugged".into())
+                } else {
+                    Ok("usb".into())
+                }
+            }
+            fn target(&self) -> Result<String, String> {
+                Ok("virtual".into())
+            }
+            fn set(&self, _: &str) -> Result<(), String> {
+                panic!("No policy write")
+            }
+        }
+        let path = std::env::temp_dir().join(format!(
+            "dictto-unplug-before-switch-{}.json",
+            std::process::id()
+        ));
+        assert_eq!(
+            acquire(&path, &Vanished(false.into())).unwrap_err(),
+            "Unplugged"
+        );
         assert!(!path.exists());
     }
     #[test]
