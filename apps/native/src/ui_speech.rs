@@ -192,7 +192,11 @@ impl App {
             })
             .unwrap_or_default();
         self.label(&format!("Available modes: {modes}"), [20, 183, 614, 22]);
-        self.label("Clone actions use the last recorded sample. Engine voice settings apply to text reading.", [20, 209, 614, 38]);
+        self.label(
+            "Clone actions use your last recorded voice sample.",
+            [20, 213, 438, 26],
+        );
+        self.button(624, "Open audio folder", [478, 205, 156, 30]);
         self.label("Advanced engine options (JSON object)", [20, 253, 600, 22]);
         let key = format!(
             "engine_draft:{}",
@@ -288,6 +292,31 @@ impl App {
                         self.persist("tts_engine_options", &options);
                     }
                     Err(error) => self.status = error,
+                }
+            }
+            (624, BN_CLICKED) => {
+                use std::os::windows::ffi::OsStrExt;
+                let folder = self.runtime.speech_audio_dir();
+                if let Err(error) = std::fs::create_dir_all(&folder) {
+                    self.status = format!("Could not create the audio folder: {error}");
+                } else {
+                    let path: Vec<u16> = folder.as_os_str().encode_wide().chain(Some(0)).collect();
+                    let result = ShellExecuteW(
+                        Some(self.window),
+                        w!("open"),
+                        PCWSTR(path.as_ptr()),
+                        PCWSTR::null(),
+                        PCWSTR::null(),
+                        SW_SHOWNORMAL,
+                    );
+                    self.status = if result.0 as isize > 32 {
+                        "Opened audio folder.".into()
+                    } else {
+                        format!(
+                            "Windows could not open the audio folder (error {}).",
+                            result.0 as isize
+                        )
+                    };
                 }
             }
             (640..=644, BN_CLICKED) => {

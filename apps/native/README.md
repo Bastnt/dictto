@@ -67,6 +67,14 @@ actions use the focused app's selection and fall back to clipboard text.
 The current sample is stored as `voice-sample.wav` beside Dictto's database
 and uploaded with each clone request. Engine-voice reading needs no sample.
 
+In **Speech**, select **Open audio folder** to see the WAV files in
+`%LOCALAPPDATA%\com.dictto.app\Speech Audio`. Dictto keeps up to six complete
+synthesis results across speech-to-speech and both text-reading modes.
+Each result is one WAV, including longer passages. Reusing a result refreshes
+its place in the cache. A new result replaces the least recently used one
+when the folder is full. Transcripts and selected or clipboard text are not
+saved alongside these files.
+
 Developer checks:
 
 ```powershell

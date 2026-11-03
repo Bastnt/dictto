@@ -14,7 +14,7 @@ Dictto is a privacy-first voice-to-text app. Dictto sends audio and text to the 
 4. The transcribed text is pasted at your cursor
 5. Dictto discards the dictation audio after processing and stores the dictation text in local history.
 
-In Dictto Native, recording a clone sample saves a WAV locally. Each clone request uploads that sample with the text to synthesize. Speech-to-speech sends the new recording for transcription and sends the resulting text for synthesis. The transcript and synthesized audio stay in memory on the client. Read-aloud uses the selection or clipboard text as input.
+In Dictto Native, recording a clone sample saves a WAV locally. Each clone request uploads that sample with the text to synthesize. Speech-to-speech sends the new recording for transcription and sends the resulting text for synthesis. The speech-to-speech transcript stays in memory. Read-aloud uses the selection or clipboard text as input. Dictto caches the synthesized audio from all three actions in the local Speech Audio folder. It saves each complete result as one WAV and keeps up to six results. Replaying a cached result refreshes its recency. Adding a seventh result evicts the least recently used one. The folder stores no transcripts or copies of the input text.
 
 ## Your API Key (BYOK)
 
@@ -38,6 +38,7 @@ Dictto stores the following data on your device only:
 | Settings (language, microphone, etc.) | `%LOCALAPPDATA%\com.dictto.app\dictto.db` | App preferences |
 | Transcription history | `%LOCALAPPDATA%\com.dictto.app\dictto.db` | Your reference |
 | API key | Windows Credential Locker | Authentication with the configured endpoint |
+| Native speech output cache | `%LOCALAPPDATA%\com.dictto.app\Speech Audio\` | Up to six synthesized WAVs for reuse and access through **Speech → Open audio folder** |
 | Current native clone sample | `%LOCALAPPDATA%\com.dictto.app\voice-sample.wav` | Reference voice for cloned speech |
 
 You can delete all local data by uninstalling Dictto and choosing "Remove all data" during uninstallation, or by manually deleting the `%LOCALAPPDATA%\com.dictto.app\` folder.

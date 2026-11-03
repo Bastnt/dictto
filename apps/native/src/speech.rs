@@ -4,7 +4,7 @@ use crate::services::hotkey::chord::{Chord, Tracker};
 use crate::services::transcription::{
     openai_api::OpenAIWhisper, TranscriptionConfig, TranscriptionEngine,
 };
-use crate::{speech_api, AppState};
+use crate::AppState;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -205,47 +205,16 @@ impl Action {
         if text.trim().is_empty() {
             return Err("No text to speak.".into());
         }
-        let models = speech_api::discover(&state.http_client, base, &key).await?;
-        let model = if get("tts_model").is_empty() {
-            speech_api::default_speech_model(&models)
-                .ok_or("The configured API does not advertise any speech models.")?
-        } else {
-            models.iter().find(|m| m.id == get("tts_model")).ok_or(
-                "The saved speech model is unavailable. Choose another in Settings > Speech.",
-            )?
-        };
-        let voice = match settings.get(&format!("tts_voice:{}", model.id)) {
-            Some(value) => value.parse().ok(),
-            None if !settings.contains_key(&format!("tts_voice_instruction:{}", model.id)) => {
-                speech_api::default_speech_voice(model)
-            }
-            None => None,
-        };
-        let options: serde_json::Value =
-            serde_json::from_str(get("tts_engine_options")).unwrap_or_default();
-        let options = options
-            .get(&model.id)
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        for chunk in speech_chunks(&text) {
-            let wav = speech_api::synthesize(
-                &state.http_client,
-                base,
-                &key,
-                model,
-                speech_api::SpeechRequest {
-                    text: chunk,
-                    language: config.language.as_deref().unwrap_or(""),
-                    voice,
-                    instruction: get(&format!("tts_voice_instruction:{}", model.id)),
-                    options: &options,
-                    sample: sample.clone(),
-                },
-            )
-            .await?;
-            play(wav).await?;
-        }
-        Ok(())
+        render::speak(
+            &state,
+            &settings,
+            &key,
+            &text,
+            config.language.as_deref().unwrap_or(""),
+            sample.as_deref(),
+            &render::WindowsPlayer,
+        )
+        .await
     }
 }
 
@@ -264,8 +233,31 @@ fn replace_sample(path: &std::path::Path, wav: &[u8]) -> Result<(), String> {
 }
 
 fn speech_chunks(mut text: &str) -> impl Iterator<Item = &str> {
+    let mut opening = true;
     std::iter::from_fn(move || {
         while !text.is_empty() {
+            if opening && text.chars().nth(450).is_some() {
+                opening = false;
+                let mut boundary = None;
+                for (n, (i, ch)) in text.char_indices().take(350).enumerate() {
+                    if matches!(ch, '.' | '!' | '?' | '。' | '！' | '？' | '\n')
+                        && (matches!(ch, '。' | '！' | '？' | '\n')
+                            || text[i + ch.len_utf8()..].starts_with(char::is_whitespace))
+                    {
+                        boundary = Some(i + ch.len_utf8());
+                        if n >= 150 {
+                            break;
+                        }
+                    }
+                }
+                if let Some(end) = boundary {
+                    let (chunk, rest) = text.split_at(end);
+                    text = rest;
+                    if !chunk.trim().is_empty() {
+                        return Some(chunk);
+                    }
+                }
+            }
             let limit = text.char_indices().nth(4096).map_or(text.len(), |(i, _)| i);
             let candidate = &text[..limit];
             let end = if limit == text.len() {
@@ -415,7 +407,7 @@ fn selection_or_clipboard() -> Result<String, String> {
 
 pub(crate) mod cache;
 mod playback;
-use playback::play;
+mod render;
 
 #[cfg(test)]
 mod tests {

@@ -1175,6 +1175,8 @@ mod tests {
                 app.catalog_loading = true;
                 app.render();
                 assert!(!IsWindowEnabled(app.control(610)).as_bool());
+                assert!(IsWindow(Some(app.control(624))).as_bool());
+                assert_eq!(app.text(624), "Open audio folder");
                 let discovery = |app: &mut App, models: Value| {
                     events_tx.send(("speech-catalog".into(), serde_json::json!({
                         "generation": app.catalog_generation, "models": models

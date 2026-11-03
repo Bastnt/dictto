@@ -77,7 +77,7 @@ pub async fn discover(client: &Client, base: &str, key: &str) -> Result<Vec<Spee
         .collect()
 }
 
-fn request_fields(
+pub(crate) fn request_fields(
     model: &SpeechModel,
     input: &SpeechRequest,
 ) -> Result<Map<String, Value>, String> {
