@@ -101,6 +101,7 @@ impl Database {
         self.migrate_device_default_to_auto_detect()?;
         // THIRD: insert static defaults (no 'language' entry)
         self.ensure_defaults()?;
+        self.ensure_speech_shortcuts()?;
         // THIRD: set locale-detected 'languages' for brand-new installs
         self.ensure_languages_default()?;
 
@@ -117,6 +118,52 @@ impl Database {
             stmt.execute(rusqlite::params![key, value])?;
         }
 
+        Ok(())
+    }
+
+    fn ensure_speech_shortcuts(&self) -> Result<(), DbError> {
+        use crate::services::hotkey::chord::Chord;
+
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)?;
+        let settings = self.get_all_settings()?;
+        const MARKER: &str = "speech_shortcuts_initialized_v1";
+        if settings.contains_key(MARKER) {
+            return Ok(());
+        }
+        let mut taken: Vec<Chord> = std::iter::once("hotkey")
+            .chain(settings::SPEECH_SHORTCUTS.iter().map(|&(key, _)| key))
+            .filter_map(|key| Chord::parse(settings.get(key)?).ok())
+            .collect();
+        let mut pending = Vec::new();
+        let mut assign = |key: &str, value: String| -> Result<bool, DbError> {
+            let chord = Chord::parse(&value).expect("built-in shortcut is valid");
+            if taken.iter().any(|other| chord.overlaps(other)) {
+                return Ok(false);
+            }
+            self.set_setting(key, &value)?;
+            taken.push(chord);
+            Ok(true)
+        };
+        for (key, number) in settings::SPEECH_SHORTCUTS {
+            if settings.get(key).is_some_and(|v| !v.trim().is_empty()) {
+                continue;
+            }
+            if !assign(key, format!("Ctrl+Shift+F{number}"))? {
+                pending.push((key, number));
+            }
+        }
+        // Reserve all available preferred bindings before assigning alternatives.
+        for (key, number) in pending {
+            'candidates: for n in std::iter::once(number).chain(1..=12) {
+                for modifiers in ["Ctrl+Alt", "Shift+Alt", "Ctrl+Shift", "Win+Shift", "Win+Alt", "Win+Ctrl"] {
+                    if assign(key, format!("{modifiers}+F{n}"))? {
+                        break 'candidates;
+                    }
+                }
+            }
+        }
+        self.set_setting(MARKER, "true")?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -232,6 +279,40 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speech_bindings_have_distinct_defaults_and_stay_disabled_after_clearing() {
+        let db = Database::new_in_memory().unwrap();
+        for (key, n) in settings::SPEECH_SHORTCUTS {
+            assert_eq!(db.get_setting(key), Some(format!("Ctrl+Shift+F{n}")));
+        }
+        db.set_setting("tts_hotkey_sample_mic", "").unwrap();
+        db.initialize().unwrap();
+        assert_eq!(db.get_setting("tts_hotkey_sample_mic").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn speech_binding_upgrade_preserves_user_chords_and_avoids_subset_conflicts() {
+        use crate::services::hotkey::chord::Chord;
+        let db = Database::new_in_memory().unwrap();
+        db.conn.execute("DELETE FROM settings WHERE key='speech_shortcuts_initialized_v1'", []).unwrap();
+        for (key, _) in settings::SPEECH_SHORTCUTS {
+            db.set_setting(key, "").unwrap();
+        }
+        db.set_setting("hotkey", "F6").unwrap();
+        db.set_setting("tts_hotkey_read_voice", "shift+ctrl+F7").unwrap();
+        db.initialize().unwrap();
+        assert_eq!(db.get_setting("hotkey").as_deref(), Some("F6"));
+        assert_eq!(db.get_setting("tts_hotkey_read_voice").as_deref(), Some("shift+ctrl+F7"));
+        assert_eq!(db.get_setting("tts_hotkey_speech_to_speech").as_deref(), Some("Ctrl+Shift+F8"));
+        assert_eq!(db.get_setting("tts_hotkey_read_clone").as_deref(), Some("Ctrl+Shift+F9"));
+        let mut seen = vec![Chord::parse("F6").unwrap()];
+        for (key, _) in settings::SPEECH_SHORTCUTS {
+            let chord = Chord::parse(&db.get_setting(key).unwrap()).unwrap();
+            assert!(seen.iter().all(|other| !chord.overlaps(other)));
+            seen.push(chord);
+        }
+    }
 
     // DRES-03: migrate_device_default_to_auto_detect migrates "default" -> "auto-detect"
     #[test]

@@ -59,6 +59,7 @@ struct App {
     taskbar_message: u32,
     speech_models: Vec<SpeechModel>,
     catalog_generation: u64,
+    catalog_loading: bool,
     microphones: Vec<String>,
     languages: Vec<String>,
     smoke: bool,
@@ -536,6 +537,7 @@ impl App {
                 if key == "api_base_url" {
                     self.speech_models.clear();
                     self.catalog_generation += 1;
+                    self.catalog_loading = false;
                 }
                 self.status = "Saved".into();
                 true
@@ -761,6 +763,8 @@ unsafe extern "system" fn window_proc(
         }
         WM_NCDESTROY => {
             (*pointer).window = HWND::default();
+            (*pointer).catalog_generation += 1;
+            (*pointer).catalog_loading = false;
             (*pointer).children.clear();
             (*pointer).drafts.clear();
             let _ = DeleteObject((*pointer).font.into());
@@ -1010,6 +1014,7 @@ unsafe fn run_windows(
         taskbar_message: RegisterWindowMessageW(w!("TaskbarCreated")),
         speech_models: Vec::new(),
         catalog_generation: 0,
+        catalog_loading: false,
         microphones: Vec::new(),
         languages: Vec::new(),
         smoke,
@@ -1086,7 +1091,7 @@ mod tests {
         {
             let runtime = NativeRuntime::new(path.clone(), |_, _| {}).unwrap();
             runtime.set_setting("languages", r#"["fr","en"]"#).unwrap();
-            let (_, events) = mpsc::channel();
+            let (events_tx, events) = mpsc::channel();
             unsafe {
                 RegisterClassW(&WNDCLASSW {
                     lpfnWndProc: Some(window_proc),
@@ -1117,6 +1122,7 @@ mod tests {
                     taskbar_message: 0,
                     speech_models: Vec::new(),
         catalog_generation: 0,
+        catalog_loading: false,
         microphones: Vec::new(),
                     languages: Vec::new(),
                     smoke: true,
@@ -1156,7 +1162,7 @@ mod tests {
                     app.runtime.get_settings().unwrap()["transcription_model"],
                     "draft-model"
                 );
-                app.speech_models = serde_json::from_value(serde_json::json!([
+                let catalog = serde_json::json!([
                     {"id":"qwen3-tts","name":"Qwen","capabilities":{
                         "modes":{"speaker":["worker"]},"voice_fields":{"speaker":["voice","voice_instruction"]},
                         "voices":[{"id":18,"name":"Test speaker"}],"engine_options":{"temperature":"number"}
@@ -1164,8 +1170,37 @@ mod tests {
                     {"id":"omnivoice","name":"Omni","capabilities":{
                         "modes":{"auto":["worker"]},"voice_fields":{"auto":[]},"engine_options":{"num_step":"integer"}
                     }}
-                ])).unwrap();
-                app.command(14, BN_CLICKED);
+                ]);
+                app.page = 4;
+                app.catalog_loading = true;
+                app.render();
+                assert!(!IsWindowEnabled(app.control(610)).as_bool());
+                let discovery = |app: &mut App, models: Value| {
+                    events_tx.send(("speech-catalog".into(), serde_json::json!({
+                        "generation": app.catalog_generation, "models": models
+                    }))).unwrap();
+                    SendMessageW(app.host, EVENTS, None, None);
+                };
+                discovery(&mut app, catalog.clone());
+                assert!(!app.catalog_loading);
+                assert!(IsWindowEnabled(app.control(610)).as_bool());
+                assert_eq!(SendMessageW(app.control(610), CB_GETCOUNT, None, None).0, 3);
+                assert_eq!(SendMessageW(app.control(610), CB_GETCURSEL, None, None).0, 1);
+                assert_eq!(app.runtime.get_settings().unwrap()["tts_model"], "qwen3-tts");
+                assert_eq!(app.runtime.get_settings().unwrap()["tts_voice:qwen3-tts"], "18");
+                SendMessageW(app.control(611), CB_SETCURSEL, Some(WPARAM(0)), None);
+                app.command(611, CBN_SELCHANGE);
+                discovery(&mut app, catalog.clone());
+                assert_eq!(app.runtime.get_settings().unwrap()["tts_voice:qwen3-tts"], "");
+                discovery(&mut app, serde_json::json!([]));
+                assert!(app.status.contains("no speech models"));
+                assert!(!IsWindowEnabled(app.control(610)).as_bool());
+                events_tx.send(("speech-catalog".into(), serde_json::json!({
+                    "generation": app.catalog_generation, "error": "unauthorized"
+                }))).unwrap();
+                SendMessageW(app.host, EVENTS, None, None);
+                assert!(app.status.contains("unauthorized"));
+                discovery(&mut app, catalog);
                 SendMessageW(app.control(610), CB_SETCURSEL, Some(WPARAM(1)), None);
                 app.command(610, CBN_SELCHANGE);
                 SendMessageW(app.control(611), CB_SETCURSEL, Some(WPARAM(1)), None);

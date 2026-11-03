@@ -1,11 +1,14 @@
+pub const SPEECH_SHORTCUTS: [(&str, u8); 5] = [
+    ("tts_hotkey_sample_mic", 6),
+    ("tts_hotkey_sample_loopback", 7),
+    ("tts_hotkey_speech_to_speech", 8),
+    ("tts_hotkey_read_clone", 9),
+    ("tts_hotkey_read_voice", 10),
+];
+
 pub fn default_settings() -> Vec<(&'static str, &'static str)> {
     vec![
         ("hotkey", "Ctrl+Win"),
-        ("tts_hotkey_sample_mic", ""),
-        ("tts_hotkey_sample_loopback", ""),
-        ("tts_hotkey_speech_to_speech", ""),
-        ("tts_hotkey_read_clone", ""),
-        ("tts_hotkey_read_voice", ""),
         ("tts_model", ""),
         ("tts_engine_options", "{}"),
         ("transcription_engine", "openai_api"),

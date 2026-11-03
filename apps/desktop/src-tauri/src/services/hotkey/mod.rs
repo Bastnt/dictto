@@ -87,11 +87,15 @@ unsafe extern "system" fn hook_proc(
         let is_up = wparam.0 == WM_KEYUP as usize || wparam.0 == WM_SYSKEYUP as usize;
 
         if is_down || is_up {
-            #[cfg(not(feature = "tauri-host"))]
-            if let (Some(action),Some(tx)) = (crate::speech::key_event(vk,is_down),HOTKEY_TX.get()) {
-                let _=tx.send(HotkeyEvent::Speech(action));
-            }
             send_transition(tracker().lock().unwrap().event(vk, is_down));
+            #[cfg(not(feature = "tauri-host"))]
+            {
+                let (action, suppress) = crate::speech::key_event(vk, is_down);
+                if let (Some(action), Some(tx)) = (action, HOTKEY_TX.get()) {
+                    let _ = tx.send(HotkeyEvent::Speech(action));
+                }
+                if suppress { return LRESULT(1); }
+            }
         }
     }
 

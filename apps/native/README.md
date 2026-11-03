@@ -33,19 +33,32 @@ drawing loop runs while idle.
 ### Speech shortcuts
 
 In **API**, use the same authenticated fleet base URL and key as dictation.
-In **Speech**, refresh the model list and choose a speech model. The available
+In **Speech**, Dictto discovers the fleet models and selects an initial model and
+speaker when available. Refresh the list or choose another model at any time. The available
 speakers, instructions and advanced options come from that model's advertised
-capabilities. In **Shortcuts**, assign the actions you want to use. All five
-bindings start empty.
+capabilities. The **Shortcuts** page shows the assigned bindings. Edit a field
+and save to change it, or clear it to disable that action.
+
+| Default shortcut | Action |
+| --- | --- |
+| Ctrl+Shift+F6 | Record voice sample from the microphone |
+| Ctrl+Shift+F7 | Record voice sample from Windows playback |
+| Ctrl+Shift+F8 | Repeat my speech in the cloned voice |
+| Ctrl+Shift+F9 | Read text in the cloned voice |
+| Ctrl+Shift+F10 | Read text in the engine voice |
+
+On first setup or upgrade, Dictto preserves custom bindings and chooses an
+alternative when a default overlaps an existing Dictto shortcut. Both read
+actions use the focused app's selection and fall back to clipboard text.
 
 - **Record clone sample from microphone / Windows playback** records from the
   selected microphone or default playback endpoint. Press the shortcut again
   or use the overlay stop button to replace the local sample. Cancel discards
   the take. Sample capture stops automatically just before 30 seconds.
-- **Speak in cloned voice** records the microphone. Press the shortcut again
+- **Repeat my speech in the cloned voice** records the microphone. Press the shortcut again
   to transcribe with your existing STT settings, synthesize in the last
   sampled voice, and play the result. The transcript stays in memory.
-- **Read selection / clipboard in cloned voice / engine voice** reads the
+- **Read text in the cloned voice / engine voice** reads the
   focused application's accessible text selection, falling back to clipboard
   text. Dictto reads the clipboard without writing to it. Long passages play
   in sequential chunks. Press the same shortcut during synthesis or playback

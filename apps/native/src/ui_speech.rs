@@ -1,23 +1,17 @@
 use super::*;
 
 pub(super) const SHORTCUTS: &[(&str, &str)] = &[
-    (
-        "tts_hotkey_sample_mic",
-        "Record clone sample from microphone",
-    ),
+    ("tts_hotkey_sample_mic", "Record voice sample (microphone)"),
     (
         "tts_hotkey_sample_loopback",
-        "Record clone sample from Windows playback",
-    ),
-    ("tts_hotkey_speech_to_speech", "Speak in cloned voice"),
-    (
-        "tts_hotkey_read_clone",
-        "Read selection / clipboard in cloned voice",
+        "Record voice sample (Windows playback)",
     ),
     (
-        "tts_hotkey_read_voice",
-        "Read selection / clipboard in engine voice",
+        "tts_hotkey_speech_to_speech",
+        "Repeat my speech in the cloned voice",
     ),
+    ("tts_hotkey_read_clone", "Read text in the cloned voice"),
+    ("tts_hotkey_read_voice", "Read text in the engine voice"),
 ];
 
 impl App {
@@ -48,6 +42,7 @@ impl App {
 
     pub(super) fn refresh_speech_models(&mut self) {
         self.catalog_generation += 1;
+        self.catalog_loading = true;
         self.status = "Loading speech models from the configured API…".into();
         self.runtime.discover_speech_models(self.catalog_generation);
     }
@@ -56,6 +51,9 @@ impl App {
         if payload["generation"].as_u64() != Some(self.catalog_generation) {
             return;
         }
+        self.catalog_loading = false;
+        self.capture_drafts();
+        self.speech_models.clear();
         self.status = if let Some(error) = payload["error"].as_str() {
             format!("Speech discovery: {error}")
         } else {
@@ -65,16 +63,42 @@ impl App {
                     if self.speech_models.is_empty() {
                         "This API advertises no speech models.".into()
                     } else {
-                        "Speech models loaded.".into()
+                        self.choose_initial_speech_model()
                     }
                 }
                 Err(e) => format!("Invalid speech catalog: {e}"),
             }
         };
         if self.page == 4 && !self.window.0.is_null() {
-            self.capture_drafts();
             self.render();
         }
+    }
+
+    unsafe fn choose_initial_speech_model(&mut self) -> String {
+        if self
+            .drafts
+            .get("tts_model")
+            .is_some_and(|id| !id.is_empty())
+        {
+            return "Speech models loaded.".into();
+        }
+        let model = dictto_native::speech_api::default_speech_model(&self.speech_models)
+            .expect("nonempty catalog");
+        let model_id = model.id.clone();
+        let speaker = dictto_native::speech_api::default_speech_voice(model);
+        let voice_key = format!("tts_voice:{model_id}");
+        let instruction_key = format!("tts_voice_instruction:{model_id}");
+        if !self.drafts.contains_key(&voice_key) && !self.drafts.contains_key(&instruction_key) {
+            if let Some(speaker) = speaker {
+                if !self.persist(&voice_key, &speaker.to_string()) {
+                    return self.status.clone();
+                }
+            }
+        }
+        if !self.persist("tts_model", &model_id) {
+            return self.status.clone();
+        }
+        format!("Selected {model_id}.")
     }
 
     pub(super) unsafe fn render_speech_shortcuts(&mut self) {
@@ -89,6 +113,7 @@ impl App {
             self.edit(630 + i, key, [340, y, 197, 28]);
             self.button(640 + i, "Save", [550, y, 84, 28]);
         }
+        self.label("Read text uses the selection in the focused app, then the clipboard if nothing is selected.", [20, 365, 614, 28]);
     }
 
     pub(super) unsafe fn render_speech(&mut self) {
@@ -97,6 +122,8 @@ impl App {
         let mut labels = vec![
             match self.drafts.get("tts_model").filter(|s| !s.is_empty()) {
                 Some(id) if model.is_none() => format!("{id} (not discovered)"),
+                _ if self.catalog_loading => "Loading models…".into(),
+                _ if self.speech_models.is_empty() => "No models available".into(),
                 _ => "Choose a model".into(),
             },
         ];
@@ -111,7 +138,12 @@ impl App {
             .position(|m| Some(&m.id) == self.drafts.get("tts_model"))
             .map_or(0, |i| i + 1);
         self.combo(610, &labels, index, [168, 56, 357, 200]);
+        let _ = EnableWindow(
+            self.control(610),
+            !self.speech_models.is_empty() && !self.catalog_loading,
+        );
         self.button(614, "Refresh", [536, 55, 98, 30]);
+        let _ = EnableWindow(self.control(614), !self.catalog_loading);
         let fields = |field: &str| {
             model.as_ref().is_some_and(|m| {
                 m.capabilities
@@ -139,7 +171,10 @@ impl App {
         self.combo(611, &voices, selected, [168, 99, 466, 200]);
         let _ = EnableWindow(self.control(611), fields("voice") && voices.len() > 1);
         self.label("Voice instruction", [20, 145, 140, 22]);
-        let instruction_key = format!("tts_voice_instruction:{}", model.as_ref().map_or("", |m| m.id.as_str()));
+        let instruction_key = format!(
+            "tts_voice_instruction:{}",
+            model.as_ref().map_or("", |m| m.id.as_str())
+        );
         self.edit(620, &instruction_key, [168, 141, 357, 28]);
         self.button(621, "Save", [536, 140, 98, 30]);
         let instruction = fields("voice_instruction");
@@ -193,7 +228,8 @@ impl App {
     pub(super) unsafe fn capture_engine_draft(&mut self) {
         if !self.control(622).0.is_null() {
             if let Some(model) = self.selected_speech_model().map(|m| m.id.clone()) {
-                self.drafts.insert(format!("tts_voice_instruction:{model}"), self.text(620));
+                self.drafts
+                    .insert(format!("tts_voice_instruction:{model}"), self.text(620));
                 self.drafts
                     .insert(format!("engine_draft:{model}"), self.text(622));
             }
@@ -224,7 +260,11 @@ impl App {
                     self.persist(&format!("tts_voice:{}", model.id), &voice);
                 }
             }
-            (614, BN_CLICKED) => self.refresh_speech_models(),
+            (614, BN_CLICKED) => {
+                self.capture_drafts();
+                self.refresh_speech_models();
+                self.render();
+            }
             (621, BN_CLICKED) => {
                 let value = self.text(620);
                 if value.chars().count() > 1024 {

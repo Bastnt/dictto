@@ -5,7 +5,7 @@ use crate::services::transcription::{
     openai_api::OpenAIWhisper, TranscriptionConfig, TranscriptionEngine,
 };
 use crate::{speech_api, AppState};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -26,19 +26,24 @@ pub(crate) const BINDINGS: [(&str, Action); 5] = [
     ("tts_hotkey_read_voice", Action::ReadVoice),
 ];
 
-fn trackers() -> &'static Mutex<Vec<(Action, Tracker)>> {
-    static TRACKERS: OnceLock<Mutex<Vec<(Action, Tracker)>>> = OnceLock::new();
-    TRACKERS.get_or_init(Default::default)
+#[derive(Default)]
+struct Shortcuts {
+    bindings: Vec<(Action, Tracker)>,
+    suppressed: BTreeSet<u16>,
+    suspended: bool,
+}
+
+fn shortcuts() -> &'static Mutex<Shortcuts> {
+    static SHORTCUTS: OnceLock<Mutex<Shortcuts>> = OnceLock::new();
+    SHORTCUTS.get_or_init(Default::default)
 }
 
 pub(crate) fn configure(mut bindings: Vec<(Action, Tracker)>) {
-    let mut current = trackers().lock().unwrap();
-    if current.iter().any(|(_, tracker)| tracker.suspended) {
-        for (_, tracker) in &mut bindings {
-            tracker.suspended = true;
-        }
+    let mut current = shortcuts().lock().unwrap();
+    for (_, tracker) in &mut bindings {
+        tracker.suspended = current.suspended;
     }
-    *current = bindings;
+    current.bindings = bindings;
 }
 
 pub(crate) fn parse_bindings(
@@ -81,18 +86,35 @@ pub(crate) fn parse_bindings(
     Ok(result)
 }
 
-pub(crate) fn key_event(vk: u16, down: bool) -> Option<Action> {
-    let mut hit = None;
-    for (action, tracker) in trackers().lock().unwrap().iter_mut() {
-        if tracker.event(vk, down) == Some(true) && hit.is_none() {
-            hit = Some(*action);
+impl Shortcuts {
+    fn event(&mut self, vk: u16, down: bool) -> (Option<Action>, bool) {
+        let mut hit = None;
+        for (action, tracker) in &mut self.bindings {
+            if tracker.event(vk, down) == Some(true) && hit.is_none() {
+                hit = Some(*action);
+            }
         }
+        // Keep the function key and its repeats out of the focused application's accelerators.
+        if hit.is_some() && !matches!(vk,0x10..=0x12|0x5b..=0x5c|0xa0..=0xa5) {
+            self.suppressed.insert(vk);
+        }
+        let suppress = if down {
+            self.suppressed.contains(&vk)
+        } else {
+            self.suppressed.remove(&vk)
+        };
+        (hit, suppress)
     }
-    hit
+}
+
+pub(crate) fn key_event(vk: u16, down: bool) -> (Option<Action>, bool) {
+    shortcuts().lock().unwrap().event(vk, down)
 }
 
 pub(crate) fn suspend(active: bool) {
-    for (_, tracker) in trackers().lock().unwrap().iter_mut() {
+    let mut current = shortcuts().lock().unwrap();
+    current.suspended = active;
+    for (_, tracker) in &mut current.bindings {
         tracker.reset();
         tracker.suspended = active;
     }
@@ -184,10 +206,21 @@ impl Action {
             return Err("No text to speak.".into());
         }
         let models = speech_api::discover(&state.http_client, base, &key).await?;
-        let model = models
-            .iter()
-            .find(|m| m.id == get("tts_model"))
-            .ok_or("Choose an available speech model in Settings.")?;
+        let model = if get("tts_model").is_empty() {
+            speech_api::default_speech_model(&models)
+                .ok_or("The configured API does not advertise any speech models.")?
+        } else {
+            models.iter().find(|m| m.id == get("tts_model")).ok_or(
+                "The saved speech model is unavailable. Choose another in Settings > Speech.",
+            )?
+        };
+        let voice = match settings.get(&format!("tts_voice:{}", model.id)) {
+            Some(value) => value.parse().ok(),
+            None if !settings.contains_key(&format!("tts_voice_instruction:{}", model.id)) => {
+                speech_api::default_speech_voice(model)
+            }
+            None => None,
+        };
         let options: serde_json::Value =
             serde_json::from_str(get("tts_engine_options")).unwrap_or_default();
         let options = options
@@ -203,7 +236,7 @@ impl Action {
                 speech_api::SpeechRequest {
                     text: chunk,
                     language: config.language.as_deref().unwrap_or(""),
-                    voice: get(&format!("tts_voice:{}", model.id)).parse().ok(),
+                    voice,
                     instruction: get(&format!("tts_voice_instruction:{}", model.id)),
                     options: &options,
                     sample: sample.clone(),
@@ -488,6 +521,22 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), *output.get_ref());
         std::fs::remove_file(path).unwrap();
     }
+    #[test]
+    fn read_hotkey_keeps_the_function_key_out_of_the_focused_app() {
+        let settings = HashMap::from([("tts_hotkey_read_clone".into(), "Ctrl+Shift+F9".into())]);
+        let mut chords = Shortcuts {
+            bindings: parse_bindings(&settings, true).unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(chords.event(0xa2, true), (None, false));
+        assert_eq!(chords.event(0xa0, true), (None, false));
+        assert_eq!(chords.event(0x78, true), (Some(Action::ReadClone), true));
+        assert_eq!(chords.event(0x78, true), (None, true));
+        assert_eq!(chords.event(0xa2, false), (None, false));
+        assert_eq!(chords.event(0x78, false), (None, true));
+        assert_eq!(chords.event(0x78, true), (None, false));
+    }
+
     #[test]
     fn bindings_reject_collisions_with_dictation_or_other_speech_actions() {
         let mut settings = HashMap::new();

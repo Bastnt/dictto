@@ -25,6 +25,23 @@ pub struct SpeechModel {
     pub capabilities: Capabilities,
 }
 
+pub fn default_speech_voice(model: &SpeechModel) -> Option<i64> {
+    if model.capabilities.modes.contains_key("speaker") {
+        model.capabilities.voices.first().map(|v| v.id)
+    } else {
+        None
+    }
+}
+
+pub fn default_speech_model(models: &[SpeechModel]) -> Option<&SpeechModel> {
+    models.iter().max_by_key(|model| {
+        let modes = &model.capabilities.modes;
+        let speaker = default_speech_voice(model).is_some();
+        let readable = speaker || modes.contains_key("auto") || modes.contains_key("design");
+        (readable && modes.contains_key("clone"), readable, speaker, model.id == "qwen3-tts")
+    })
+}
+
 pub struct SpeechRequest<'a> {
     pub text: &'a str,
     pub language: &'a str,
