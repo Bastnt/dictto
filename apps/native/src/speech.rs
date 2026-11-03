@@ -180,6 +180,10 @@ impl Action {
             .get_all_settings()
             .map_err(|e| e.to_string())?;
         let get = |key: &str| settings.get(key).map(String::as_str).unwrap_or("");
+        let use_virtual_mic = get("tts_virtual_mic") == "true";
+        if use_virtual_mic {
+            state.mic_route.check_available()?;
+        }
         let key = crate::services::db::keystore::get_api_key()
             .map_err(|_| "Set your fleet API key in Settings.")?;
         let base = get("api_base_url");
@@ -205,16 +209,26 @@ impl Action {
         if text.trim().is_empty() {
             return Err("No text to speak.".into());
         }
-        render::speak(
+        let player = render::WindowsPlayer {
+            microphone: use_virtual_mic.then(|| virtual_mic::Player::new(state.mic_route.clone())),
+        };
+        let result = render::speak(
             &state,
             &settings,
             &key,
             &text,
             config.language.as_deref().unwrap_or(""),
             sample.as_deref(),
-            &render::WindowsPlayer,
+            &player,
         )
-        .await
+        .await;
+        let restored = player.microphone.as_ref().map_or(Ok(()), |p| p.finish());
+        match (result, restored) {
+            (Err(error), Err(restore)) => {
+                Err(format!("{error} Microphone restoration pending: {restore}"))
+            }
+            (result, restore) => result.and(restore),
+        }
     }
 }
 
@@ -406,8 +420,10 @@ fn selection_or_clipboard() -> Result<String, String> {
 }
 
 pub(crate) mod cache;
+mod communications;
 mod playback;
 mod render;
+pub(crate) mod virtual_mic;
 
 #[cfg(test)]
 mod tests {

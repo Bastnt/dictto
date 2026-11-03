@@ -26,6 +26,7 @@ impl NativeRuntime {
             .map_err(|e| log::warn!("Could not open speech audio folder: {e}"))
             .ok();
         let state = Arc::new(AppState {
+            mic_route: Arc::new(crate::speech::virtual_mic::Manager::new(&data_dir)),
             speech_cache: Mutex::new(speech_cache),
             speech_audio_dir,
             sample_path: data_dir.join("voice-sample.wav"),
@@ -56,7 +57,15 @@ impl NativeRuntime {
         if self.inner.started.load(Ordering::Acquire) {
             return Ok(());
         }
-        if self.get_settings()?.get("auto_start").map(String::as_str) == Some("true") {
+        if let Err(error) = self.inner.state.mic_route.recover() {
+            self.report_route_error(error);
+        }
+        let settings = self.get_settings()?;
+        self.inner
+            .state
+            .mic_route
+            .set_enabled(settings.get("tts_virtual_mic").is_some_and(|v| v == "true"))?;
+        if settings.get("auto_start").map(String::as_str) == Some("true") {
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
             services::autostart::enable_autostart(&exe.to_string_lossy())?;
         }
@@ -126,6 +135,11 @@ impl NativeRuntime {
             }
             if let Some(chord) = chord {
                 services::hotkey::configure(chord);
+            }
+        }
+        if key == "tts_virtual_mic" {
+            if let Err(error) = self.inner.state.mic_route.set_enabled(value == "true") {
+                self.report_route_error(error);
             }
         }
         self.inner
@@ -198,7 +212,21 @@ impl NativeRuntime {
     pub fn cancel_recording(&self) {
         services::hotkey::send_bar_cancel();
     }
+    fn report_route_error(&self, error: String) {
+        log::error!("Communications microphone recovery: {error}");
+        let message = format!("Could not restore the communications microphone. {error}");
+        let _ = self
+            .inner
+            .app
+            .emit("speech-error", serde_json::json!({"message":message}));
+    }
+    pub fn session_changed(&self, suspended: bool) {
+        if let Err(error) = self.inner.state.mic_route.session_changed(suspended) {
+            self.report_route_error(error);
+        }
+    }
     pub fn shutdown(&self) {
+        self.inner.state.mic_route.shutdown();
         self.set_hotkey_capture(true);
         self.cancel_recording();
         if let Ok(mut recorder) = self.inner.state.audio_recorder.lock() {

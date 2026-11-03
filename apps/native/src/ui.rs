@@ -858,6 +858,18 @@ unsafe extern "system" fn host_proc(
         return LRESULT(0);
     }
     match message {
+        WM_WTSSESSION_CHANGE => {
+            match wparam.0 as u32 {
+                WTS_SESSION_LOCK | WTS_SESSION_LOGOFF | WTS_CONSOLE_DISCONNECT | WTS_REMOTE_DISCONNECT => (*pointer).runtime.session_changed(true),
+                WTS_SESSION_UNLOCK | WTS_SESSION_LOGON | WTS_CONSOLE_CONNECT | WTS_REMOTE_CONNECT => (*pointer).runtime.session_changed(false),
+                _=>{}
+            }
+            LRESULT(0)
+        }
+        WM_ENDSESSION if wparam.0!=0 => {
+            (*pointer).runtime.session_changed(true);
+            LRESULT(0)
+        }
         EVENTS => {
             (*pointer).drain_events();
             LRESULT(0)
@@ -1041,6 +1053,13 @@ unsafe fn run_windows(
     )
     .map_err(|e| e.to_string())?;
     address.store(app.host.0 as isize, Ordering::Release);
+    use windows::Win32::System::RemoteDesktop::{
+        WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
+    };
+    let notifications = !smoke && WTSRegisterSessionNotification(app.host, NOTIFY_FOR_THIS_SESSION).is_ok();
+    if !smoke && !notifications {
+        app.runtime.session_changed(true);
+    }
     let result = (|| -> Result<(), String> {
         if !Shell_NotifyIconW(NIM_ADD, &app.tray_data()).as_bool() {
             return Err("Windows could not add the Dictto tray icon".into());
@@ -1069,6 +1088,9 @@ unsafe fn run_windows(
         }
         Ok(())
     })();
+    if notifications {
+        let _ = WTSUnRegisterSessionNotification(app.host);
+    }
     address.store(0, Ordering::Release);
     let _ = Shell_NotifyIconW(NIM_DELETE, &app.tray_data());
     if !app.window.0.is_null() {

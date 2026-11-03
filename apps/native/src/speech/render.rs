@@ -14,14 +14,29 @@ pub(super) trait Player: Sync {
     async fn file(&self, path: &Path) -> Result<(), String>;
 }
 
-pub(super) struct WindowsPlayer;
+pub(super) struct WindowsPlayer {
+    pub(super) microphone: Option<super::virtual_mic::Player>,
+}
 
 #[async_trait]
 impl Player for WindowsPlayer {
     async fn chunk(&self, audio: Vec<u8>) -> Result<(), String> {
+        if let Some(mic) = &self.microphone {
+            return mic
+                .play(
+                    hound::WavReader::new(std::io::Cursor::new(audio))
+                        .map_err(|e| e.to_string())?,
+                )
+                .await;
+        }
         super::playback::play(audio).await
     }
     async fn file(&self, path: &Path) -> Result<(), String> {
+        if let Some(mic) = &self.microphone {
+            return mic
+                .play(hound::WavReader::open(path).map_err(|e| e.to_string())?)
+                .await;
+        }
         super::playback::play_file(path).await
     }
 }
@@ -321,6 +336,7 @@ mod tests {
     fn state(directory: &Path) -> AppState {
         let dir = directory.join("Speech Audio");
         AppState {
+            mic_route: Arc::new(super::super::virtual_mic::Manager::new(directory)),
             sample_path: directory.join("voice-sample.wav"),
             speech_cache: Mutex::new(Some(super::super::cache::Cache::new(dir.clone()).unwrap())),
             speech_audio_dir: dir,
