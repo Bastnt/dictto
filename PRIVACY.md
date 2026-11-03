@@ -1,27 +1,29 @@
 # Privacy Policy — Dictto
 
-**Last updated:** March 2026
+**Last updated:** November 2026
 
 ## Summary
 
-Dictto is a privacy-first voice-to-text app. Your audio and text stay on your device. We collect zero telemetry. You bring your own API key — we never see it.
+Dictto is a privacy-first voice-to-text app. Dictto sends audio and text to the API endpoint you configure for the actions you invoke. We collect zero telemetry. You bring your own API key — we never see it.
 
 ## How Dictto Works
 
 1. You hold a hotkey and speak
 2. Audio is captured locally on your device
-3. Audio is sent directly from your device to OpenAI's API for transcription and text cleanup
+3. Audio is sent directly from your device to your configured API for transcription and optional text cleanup
 4. The transcribed text is pasted at your cursor
-5. Audio is discarded immediately — it is never saved to disk or sent anywhere else
+5. Dictto discards the dictation audio after processing and stores the dictation text in local history.
 
-## Your OpenAI API Key (BYOK)
+In Dictto Native, recording a clone sample saves a WAV locally. Each clone request uploads that sample with the text to synthesize. Speech-to-speech sends the new recording for transcription and sends the resulting text for synthesis. The transcript and synthesized audio stay in memory on the client. Read-aloud uses the selection or clipboard text as input.
+
+## Your API Key (BYOK)
 
 Dictto uses a **Bring Your Own Key** model:
 
-- You provide your own OpenAI API key in Settings
+- You provide the key for your configured API endpoint in Settings
 - Your API key is stored locally in Windows Credential Locker (encrypted by Windows)
-- Your API key is sent directly from your device to OpenAI — Dictto has no servers that see your key
-- Your relationship with OpenAI is governed by [OpenAI's privacy policy](https://openai.com/privacy) and [usage policies](https://openai.com/policies/usage-policies)
+- Your API key is sent directly from your device to that endpoint
+- If you use OpenAI, its services are governed by [OpenAI's privacy policy](https://openai.com/privacy) and [usage policies](https://openai.com/policies/usage-policies)
 
 ## Data We Collect
 
@@ -35,7 +37,8 @@ Dictto stores the following data on your device only:
 |---|---|---|
 | Settings (language, microphone, etc.) | `%LOCALAPPDATA%\com.dictto.app\dictto.db` | App preferences |
 | Transcription history | `%LOCALAPPDATA%\com.dictto.app\dictto.db` | Your reference |
-| OpenAI API key | Windows Credential Locker | Authentication with OpenAI |
+| API key | Windows Credential Locker | Authentication with the configured endpoint |
+| Current native clone sample | `%LOCALAPPDATA%\com.dictto.app\voice-sample.wav` | Reference voice for cloned speech |
 
 You can delete all local data by uninstalling Dictto and choosing "Remove all data" during uninstallation, or by manually deleting the `%LOCALAPPDATA%\com.dictto.app\` folder.
 
@@ -43,10 +46,11 @@ You can delete all local data by uninstalling Dictto and choosing "Remove all da
 
 | Recipient | Data sent | When | Why |
 |---|---|---|---|
-| OpenAI | Audio recording (WAV) | Each transcription | Speech-to-text via Whisper API |
-| OpenAI | Transcribed text | Each text cleanup | Grammar/filler word cleanup via GPT |
+| Configured transcription API | Audio recording (WAV) | Dictation or speech-to-speech | Transcription |
+| Configured cleanup API | Transcribed text | Optional dictation cleanup | Text cleanup |
+| Configured speech API | Text, voice settings and, for cloning, the current sample WAV | Native speech actions | Speech synthesis |
 
-No data is sent to Dictto or any other party. The app communicates directly with OpenAI's API using your personal API key.
+No data is sent to Dictto or any other party. The app communicates directly with your configured endpoint using your API key.
 
 ## No Accounts, No Servers
 

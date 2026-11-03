@@ -19,6 +19,9 @@ use windows::{
 };
 #[path = "ui_models.rs"]
 mod models;
+#[path = "ui_speech.rs"]
+mod speech;
+use dictto_native::speech_api::SpeechModel;
 
 const TRAY: u32 = WM_APP + 42;
 const EVENTS: u32 = WM_APP + 43;
@@ -54,6 +57,8 @@ struct App {
     dpi: u32,
     icon: HICON,
     taskbar_message: u32,
+    speech_models: Vec<SpeechModel>,
+    catalog_generation: u64,
     microphones: Vec<String>,
     languages: Vec<String>,
     smoke: bool,
@@ -171,9 +176,15 @@ impl App {
         );
     }
     unsafe fn capture_drafts(&mut self) {
+        self.capture_engine_draft();
         for &(id, key) in FIELDS {
             if !self.control(id).0.is_null() {
                 self.drafts.insert(key.into(), self.text(id));
+            }
+        }
+        for (i, (key, _)) in speech::SHORTCUTS.iter().enumerate() {
+            if !self.control(630 + i).0.is_null() {
+                self.drafts.insert((*key).into(), self.text(630 + i));
             }
         }
     }
@@ -272,8 +283,8 @@ impl App {
             let _ = DestroyWindow(hwnd);
         }
         self.label("Settings", [20, 16, 220, 28]);
-        for (id, text) in [(10, "General"), (11, "Audio"), (12, "API")] {
-            self.button(id, text, [350 + (id as i32 - 10) * 96, 12, 88, 30]);
+        for (i, (id, text)) in [(10, "General"), (11, "Audio"), (12, "API"), (14, "Speech"), (15, "Shortcuts")].into_iter().enumerate() {
+            self.button(id, text, [194 + i as i32 * 89, 12, 84, 30]);
         }
         match self.page {
             0 => {
@@ -425,6 +436,8 @@ impl App {
                     [20, 349, 475, 22],
                 );
             }
+            4 => self.render_speech(),
+            5 => self.render_speech_shortcuts(),
             _ => {
                 self.label("Languages (select all that apply)", [20, 63, 410, 22]);
                 self.button(10, "Done", [546, 60, 88, 28]);
@@ -520,6 +533,10 @@ impl App {
         match result {
             Ok(()) => {
                 self.drafts.insert(key.into(), value.into());
+                if key == "api_base_url" {
+                    self.speech_models.clear();
+                    self.catalog_generation += 1;
+                }
                 self.status = "Saved".into();
                 true
             }
@@ -530,12 +547,16 @@ impl App {
         }
     }
     unsafe fn command(&mut self, id: usize, notification: u32) {
-        if id == 200 && notification == EN_SETFOCUS {
+        if (id == 200 || (630..635).contains(&id)) && notification == EN_SETFOCUS {
             self.runtime.set_hotkey_capture(true);
             return;
         }
-        if id == 200 && notification == EN_KILLFOCUS {
+        if (id == 200 || (630..635).contains(&id)) && notification == EN_KILLFOCUS {
             self.runtime.set_hotkey_capture(false);
+            return;
+        }
+        if self.speech_command(id, notification) {
+            self.label_text(STATUS, &self.status);
             return;
         }
         if id == 502 && notification == EN_CHANGE {
@@ -571,8 +592,11 @@ impl App {
         } else if notification == BN_CLICKED {
             self.capture_drafts();
             match id {
-                10..=13 => {
-                    self.page = if id == 13 { 3 } else { id - 10 };
+                10..=15 => {
+                    self.page = id - 10;
+                    if id == 14 && self.speech_models.is_empty() {
+                        self.refresh_speech_models();
+                    }
                     self.render();
                     let _ = SetFocus(Some(self.control(if id == 13 { 10 } else { id })));
                 }
@@ -675,10 +699,16 @@ impl App {
     unsafe fn drain_events(&mut self) {
         let mut devices_changed = false;
         while let Ok((name, payload)) = self.events.try_recv() {
+            if name == "speech-catalog" {
+                self.receive_speech_models(payload);
+                continue;
+            }
             if name == "audio-devices-changed" {
                 devices_changed = true;
             }
-            if matches!(
+            if name == "speech-error" {
+                self.status = payload["message"].as_str().unwrap_or("Speech action failed.").into();
+            } else if matches!(
                 name.as_str(),
                 "error" | "recording-error" | "dictation-error"
             ) {
@@ -892,11 +922,13 @@ pub fn run() -> Result<(), String> {
         if matches!(
             name,
             "error"
+                | "speech-error"
                 | "recording-error"
                 | "dictation-error"
                 | "recording-state"
                 | "recording-state-changed"
                 | "processing-state"
+                | "speech-catalog"
                 | "audio-devices-changed"
         ) {
             let _ = tx.send((name.into(), payload));
@@ -976,6 +1008,8 @@ unsafe fn run_windows(
         dpi: 96,
         icon,
         taskbar_message: RegisterWindowMessageW(w!("TaskbarCreated")),
+        speech_models: Vec::new(),
+        catalog_generation: 0,
         microphones: Vec::new(),
         languages: Vec::new(),
         smoke,
@@ -1081,7 +1115,9 @@ mod tests {
                     dpi: 96,
                     icon: HICON::default(),
                     taskbar_message: 0,
-                    microphones: Vec::new(),
+                    speech_models: Vec::new(),
+        catalog_generation: 0,
+        microphones: Vec::new(),
                     languages: Vec::new(),
                     smoke: true,
                     status: String::new(),
@@ -1120,6 +1156,43 @@ mod tests {
                     app.runtime.get_settings().unwrap()["transcription_model"],
                     "draft-model"
                 );
+                app.speech_models = serde_json::from_value(serde_json::json!([
+                    {"id":"qwen3-tts","name":"Qwen","capabilities":{
+                        "modes":{"speaker":["worker"]},"voice_fields":{"speaker":["voice","voice_instruction"]},
+                        "voices":[{"id":18,"name":"Test speaker"}],"engine_options":{"temperature":"number"}
+                    }},
+                    {"id":"omnivoice","name":"Omni","capabilities":{
+                        "modes":{"auto":["worker"]},"voice_fields":{"auto":[]},"engine_options":{"num_step":"integer"}
+                    }}
+                ])).unwrap();
+                app.command(14, BN_CLICKED);
+                SendMessageW(app.control(610), CB_SETCURSEL, Some(WPARAM(1)), None);
+                app.command(610, CBN_SELCHANGE);
+                SendMessageW(app.control(611), CB_SETCURSEL, Some(WPARAM(1)), None);
+                app.command(611, CBN_SELCHANGE);
+                assert_eq!(app.runtime.get_settings().unwrap()["tts_voice:qwen3-tts"], "18");
+                app.label_text(620, "Softly");
+                app.command(621, BN_CLICKED);
+                app.label_text(622, r#"{"temperature":"bad"}"#);
+                app.command(623, BN_CLICKED);
+                assert_eq!(app.runtime.get_settings().unwrap()["tts_engine_options"], "{}");
+                app.label_text(622, r#"{"temperature":0.8}"#);
+                app.command(623, BN_CLICKED);
+                assert_eq!(app.runtime.get_settings().unwrap()["tts_engine_options"], r#"{"qwen3-tts":{"temperature":0.8}}"#);
+                SendMessageW(app.control(610), CB_SETCURSEL, Some(WPARAM(2)), None);
+                app.command(610, CBN_SELCHANGE);
+                assert!(!IsWindowEnabled(app.control(611)).as_bool());
+                assert!(!IsWindowEnabled(app.control(620)).as_bool());
+                assert_eq!(app.text(622), "{}");
+                assert_eq!(app.text(620), "");
+                SendMessageW(app.control(610), CB_SETCURSEL, Some(WPARAM(1)), None);
+                app.command(610, CBN_SELCHANGE);
+                assert_eq!(app.text(620), "Softly");
+                assert_eq!(SendMessageW(app.control(611), CB_GETCURSEL, None, None).0, 1);
+                app.command(15, BN_CLICKED);
+                app.label_text(630, "Ctrl+Alt+F8");
+                app.command(640, BN_CLICKED);
+                assert_eq!(app.runtime.get_settings().unwrap()["tts_hotkey_sample_mic"], "Ctrl+Alt+F8");
                 app.command(13, BN_CLICKED);
                 app.fill_languages("French");
                 assert_eq!(app.languages, ["fr"]);

@@ -30,6 +30,30 @@ activate its window. Its compact recording waveform updates across the pill on
 audio events; processing displays a white spinner at 5 frames per second. No
 drawing loop runs while idle.
 
+### Speech shortcuts
+
+In **API**, use the same authenticated fleet base URL and key as dictation.
+In **Speech**, refresh the model list and choose a speech model. The available
+speakers, instructions and advanced options come from that model's advertised
+capabilities. In **Shortcuts**, assign the actions you want to use. All five
+bindings start empty.
+
+- **Record clone sample from microphone / Windows playback** records from the
+  selected microphone or default playback endpoint. Press the shortcut again
+  or use the overlay stop button to replace the local sample. Cancel discards
+  the take. Sample capture stops automatically just before 30 seconds.
+- **Speak in cloned voice** records the microphone. Press the shortcut again
+  to transcribe with your existing STT settings, synthesize in the last
+  sampled voice, and play the result. The transcript stays in memory.
+- **Read selection / clipboard in cloned voice / engine voice** reads the
+  focused application's accessible text selection, falling back to clipboard
+  text. Dictto reads the clipboard without writing to it. Long passages play
+  in sequential chunks. Press the same shortcut during synthesis or playback
+  to cancel.
+
+The current sample is stored as `voice-sample.wav` beside Dictto's database
+and uploaded with each clone request. Engine-voice reading needs no sample.
+
 Developer checks:
 
 ```powershell
