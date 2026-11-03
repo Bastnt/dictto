@@ -1,5 +1,5 @@
 use crate::host as tauri;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
@@ -43,9 +43,16 @@ impl DeviceMonitorState {
     }
 }
 
+static PLAYBACK_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub(super) fn playback_generation() -> u64 {
+    PLAYBACK_GENERATION.load(Ordering::Acquire)
+}
+
 /// How the capture thread should resolve which device to use.
 #[derive(Clone, Debug)]
 pub enum DeviceSelection {
+    PlaybackLoopback,
     /// Use the device tracked by the monitor (or fallback to system default).
     AutoDetect(Option<String>), // Option<endpoint_id>
     /// Use a specific device matched by friendly name.
@@ -58,7 +65,7 @@ pub enum DeviceSelection {
 use windows::Win32::Foundation::PROPERTYKEY;
 #[cfg(windows)]
 use windows::Win32::Media::Audio::{
-    eCapture, eConsole, EDataFlow, ERole, IMMDeviceEnumerator,
+    eCapture, eConsole, eRender, EDataFlow, ERole, IMMDeviceEnumerator,
     IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator, DEVICE_STATE,
 };
 #[cfg(windows)]
@@ -97,6 +104,9 @@ impl IMMNotificationClient_Impl for DeviceChangeNotifier_Impl {
     ) -> Result<()> {
         // Follow eConsole only — the "Dispositivo predeterminado" in Windows Sound Settings.
         // Same approach as Whispr Flow: auto-detect = Windows default input device.
+        if flow == eRender && role == eConsole {
+            PLAYBACK_GENERATION.fetch_add(1, Ordering::AcqRel);
+        }
         if flow != eCapture || role != eConsole {
             return Ok(());
         }

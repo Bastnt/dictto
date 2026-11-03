@@ -4,7 +4,7 @@ use std::thread::JoinHandle;
 use tauri::Emitter;
 
 use crate::services::audio::MicrophoneInfo;
-use crate::services::audio::device_monitor::DeviceSelection;
+use crate::services::audio::device_monitor::{playback_generation, DeviceSelection};
 
 const SAMPLE_RATE: u32 = 16000;
 const CHANNELS: u16 = 1;
@@ -21,7 +21,7 @@ const SILENCE_RMS_THRESHOLD: f64 = 50.0;
 enum CaptureCmd {
     /// Begin capturing audio with the current device selection.
     /// Carries a fresh DeviceSelection so the thread uses the latest endpoint ID.
-    Start(DeviceSelection),
+    Start(DeviceSelection, Option<u64>),
     /// Stop capturing, return samples. Thread responds with Samples or Error.
     Stop,
     /// Release all COM resources and exit. Thread responds with ShutdownAck.
@@ -173,6 +173,7 @@ impl AudioRecorder {
         log::debug!("[AudioRecorder] start() device={:?}", device);
 
         // Ensure thread is running (lazy init or device change)
+        let render_generation = matches!(&device, DeviceSelection::PlaybackLoopback).then(playback_generation);
         self.ensure_thread(&device)?;
 
         // Send Start command
@@ -181,7 +182,7 @@ impl AudioRecorder {
             .as_ref()
             .ok_or_else(|| AudioError::DeviceError("No capture thread available".into()))?;
 
-        tx.send(CaptureCmd::Start(device)).map_err(|_| {
+        tx.send(CaptureCmd::Start(device, render_generation)).map_err(|_| {
             self.cleanup_dead_thread();
             AudioError::DeviceError("Capture thread died unexpectedly".into())
         })?;
@@ -388,7 +389,7 @@ fn capture_thread_inner(
             };
 
             match cmd {
-                CaptureCmd::Start(fresh_device) => {
+                CaptureCmd::Start(fresh_device, render_generation) => {
                     // Re-init WASAPI if it was released after previous Stop.
                     // Use fresh_device (not spawn-time device) so we get the current endpoint.
                     if wasapi.is_none() {
@@ -433,6 +434,7 @@ fn capture_thread_inner(
                                         new_sr,
                                         new_ch,
                                         new_bits,
+                                        render_generation,
                                         cmd_rx,
                                         result_tx,
                                         app_handle,
@@ -469,6 +471,7 @@ fn capture_thread_inner(
                         sr,
                         ch,
                         bits,
+                        render_generation,
                         cmd_rx,
                         result_tx,
                         app_handle,
@@ -511,6 +514,28 @@ fn capture_thread_inner(
     Ok(())
 }
 
+// WASAPI uses the extensible subformat, not the container width, to distinguish PCM32 from float.
+unsafe fn direct_mix_format(format: *const windows::Win32::Media::Audio::WAVEFORMATEX) -> bool {
+    use windows::core::GUID;
+    use windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE;
+
+    let header = &*format;
+    let tag = match header.wFormatTag {
+        0xfffe if header.cbSize >= 22 => {
+            let subtype = (*format.cast::<WAVEFORMATEXTENSIBLE>()).SubFormat;
+            if subtype == GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71) { 1 }
+            else if subtype == GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71) { 3 }
+            else { return false; }
+        }
+        tag => tag,
+    };
+    let bits = header.wBitsPerSample;
+    matches!((tag, bits), (1, 16) | (3, 32))
+        && header.nChannels > 0
+        && header.nSamplesPerSec > 0
+        && u32::from(header.nBlockAlign) == u32::from(header.nChannels) * u32::from(bits / 8)
+}
+
 /// Initialize WASAPI: resolve device, activate IAudioClient, Initialize(), get capture client.
 unsafe fn init_wasapi_device(
     device: &DeviceSelection,
@@ -541,7 +566,24 @@ unsafe fn init_wasapi_device(
         .GetMixFormat()
         .map_err(|e| AudioError::DeviceError(format!("GetMixFormat failed: {}", e)))?;
     let _mix_format_guard = CoTaskMemGuard(mix_format_ptr as *const _ as *const std::ffi::c_void);
-    let mix_format = &*mix_format_ptr;
+    let pcm16 = WAVEFORMATEX {
+        wFormatTag: 1,
+        nChannels: CHANNELS,
+        nSamplesPerSec: SAMPLE_RATE,
+        nAvgBytesPerSec: SAMPLE_RATE * 2,
+        nBlockAlign: 2,
+        wBitsPerSample: 16,
+        cbSize: 0,
+    };
+    let mut flags = if matches!(device, DeviceSelection::PlaybackLoopback) {
+        AUDCLNT_STREAMFLAGS_LOOPBACK
+    } else { 0 };
+    let mix_format = if direct_mix_format(mix_format_ptr) {
+        &*mix_format_ptr
+    } else {
+        flags |= AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+        &pcm16
+    };
 
     let device_sample_rate = mix_format.nSamplesPerSec;
     let device_channels = mix_format.nChannels;
@@ -560,10 +602,10 @@ unsafe fn init_wasapi_device(
     audio_client
         .Initialize(
             AUDCLNT_SHAREMODE_SHARED,
-            0,
+            flags,
             buffer_duration,
             0,
-            mix_format_ptr,
+            mix_format,
             None,
         )
         .map_err(|e| AudioError::DeviceError(format!("Initialize failed: {}", e)))?;
@@ -646,11 +688,13 @@ unsafe fn capture_loop(
     device_sample_rate: u32,
     device_channels: u16,
     device_bits: u16,
+    render_generation: Option<u64>,
     cmd_rx: &mpsc::Receiver<CaptureCmd>,
     result_tx: &mpsc::Sender<CaptureResult>,
     app_handle: &Option<tauri::AppHandle>,
     sample_buffer: &mut Vec<i16>,
 ) -> bool {
+    let loopback = render_generation.is_some();
     sample_buffer.clear();
 
     let mut amplitude_buf: Vec<f32> = Vec::new();
@@ -659,6 +703,8 @@ unsafe fn capture_loop(
     let mut total_packets: u64 = 0;
     let mut silent_packets: u64 = 0;
     let capture_start = std::time::Instant::now();
+    let mut first_packet_time = None;
+
 
     loop {
         // Check for commands (non-blocking)
@@ -673,6 +719,16 @@ unsafe fn capture_loop(
                     silent_packets,
                     sample_buffer.len()
                 );
+                if render_generation.is_some_and(|g| g != playback_generation()) {
+                    let _ = result_tx.send(CaptureResult::Error(
+                        "Default playback device changed. Record the sample again.".into(), true
+                    ));
+                    return false;
+                }
+                if loopback && !sample_buffer.is_empty() {
+                    let elapsed_samples = (elapsed.as_secs_f64() * SAMPLE_RATE as f64) as usize;
+                    sample_buffer.resize(sample_buffer.len().max(elapsed_samples), 0);
+                }
                 let samples = std::mem::take(sample_buffer);
                 let _ = result_tx.send(CaptureResult::Samples(samples));
                 return false;
@@ -683,7 +739,7 @@ unsafe fn capture_loop(
                 let _ = result_tx.send(CaptureResult::ShutdownAck);
                 return true;
             }
-            Ok(CaptureCmd::Start(_)) => {
+            Ok(CaptureCmd::Start(_, _)) => {
                 log::warn!("[AudioRecorder] Ignoring duplicate Start command during capture");
             }
             Err(mpsc::TryRecvError::Empty) => {}
@@ -755,21 +811,35 @@ unsafe fn capture_loop(
                 silent_packets += 1;
             }
 
-            if !is_silent && total_samples > 0 {
+            if loopback && num_frames > 0 && flags & 0x4 == 0 && qpc_position != 0 {
+                // Idle render endpoints may stop delivering packets between sounds.
+                let elapsed_samples = (capture_start.elapsed().as_secs_f64() * SAMPLE_RATE as f64) as usize;
+                let frames = num_frames as usize * SAMPLE_RATE as usize / device_sample_rate as usize;
+                let (first, leading) = *first_packet_time.get_or_insert_with(||
+                    (qpc_position, elapsed_samples.saturating_sub(frames)));
+                let delta = qpc_position.saturating_sub(first) as u128 * SAMPLE_RATE as u128 / 10_000_000;
+                let offset = leading.saturating_add(usize::try_from(delta).unwrap_or(usize::MAX));
+                if offset <= elapsed_samples && offset > sample_buffer.len() {
+                    sample_buffer.resize(offset, 0);
+                }
+            }
+            if total_samples > 0 && (loopback || !is_silent) {
                 // Convert device format to mono i16
-                let samples = if device_bits == 32 {
+                let samples = if is_silent {
+                    vec![0; num_frames as usize]
+                } else if data_ptr.is_null() {
+                    let _ = capture_client.ReleaseBuffer(num_frames);
+                    let _ = audio_client.Stop();
+                    let _ = result_tx.send(CaptureResult::Error("Audio device returned an empty packet".into(), false));
+                    return true;
+                } else if device_bits == 32 {
                     let float_slice =
                         std::slice::from_raw_parts(data_ptr as *const f32, total_samples);
                     convert_to_mono_i16_f32(float_slice, device_channels as usize)
-                } else if device_bits == 16 {
+                } else {
                     let i16_slice =
                         std::slice::from_raw_parts(data_ptr as *const i16, total_samples);
                     convert_to_mono_i16(i16_slice, device_channels as usize)
-                } else {
-                    // Most WASAPI shared mode is float32
-                    let float_slice =
-                        std::slice::from_raw_parts(data_ptr as *const f32, total_samples);
-                    convert_to_mono_i16_f32(float_slice, device_channels as usize)
                 };
 
                 // Compute waveform amplitude
@@ -830,6 +900,7 @@ unsafe fn capture_loop(
 /// device gets its own thread.
 fn device_identity(device: &DeviceSelection) -> Option<String> {
     match device {
+        DeviceSelection::PlaybackLoopback => Some("\0loopback".into()),
         DeviceSelection::AutoDetect(_) => None,
         DeviceSelection::ByName(name) => Some(name.clone()),
     }
@@ -860,6 +931,8 @@ unsafe fn resolve_device(
     use windows::core::PCWSTR;
 
     match device {
+        DeviceSelection::PlaybackLoopback => enumerator.GetDefaultAudioEndpoint(eRender, eConsole)
+            .map_err(|e| AudioError::DeviceError(format!("Default playback endpoint: {e}"))),
         DeviceSelection::AutoDetect(Some(id)) => {
             let wide_id: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
             let pcwstr = PCWSTR(wide_id.as_ptr());
@@ -1221,6 +1294,60 @@ pub enum AudioError {
 mod tests {
     use super::*;
     use crate::services::audio::device_monitor::DeviceSelection;
+
+    #[test]
+    fn only_directly_read_known_pcm_and_float_layouts() {
+        use windows::Win32::Media::Audio::{WAVEFORMATEX, WAVEFORMATEXTENSIBLE};
+        let mut h = WAVEFORMATEX {
+            wFormatTag: 1, nChannels: 2, nSamplesPerSec: 48000,
+            nAvgBytesPerSec: 192000, nBlockAlign: 4, wBitsPerSample: 16, cbSize: 0,
+        };
+        unsafe {
+            assert!(direct_mix_format(&h));
+            h.wBitsPerSample = 32;
+            h.nBlockAlign = 8;
+            assert!(!direct_mix_format(&h));
+            h.wFormatTag = 3;
+            assert!(direct_mix_format(&h));
+            h.wFormatTag = 0xfffe;
+            assert!(!direct_mix_format(&h));
+            h.cbSize = 22;
+            let mut ext = WAVEFORMATEXTENSIBLE {
+                Format: h, SubFormat: windows::core::GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71),
+                ..Default::default()
+            };
+            assert!(direct_mix_format(&ext.Format));
+            ext.Format.nBlockAlign = 6;
+            assert!(!direct_mix_format(&ext.Format));
+        }
+    }
+
+    #[cfg(not(feature = "tauri-host"))]
+    #[test]
+    #[ignore = "plays a short tone on the default Windows output"]
+    fn captures_playback_with_silent_gap() {
+        use windows::core::PCWSTR;
+        use windows::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_SYNC};
+        let mut recorder = AudioRecorder::new();
+        recorder.start(DeviceSelection::PlaybackLoopback).unwrap();
+        let frames = (0..SAMPLE_RATE / 3).map(|i| {
+            (2000.0 * (i as f32 * 440.0 * std::f32::consts::TAU / SAMPLE_RATE as f32).sin()) as i16
+        }).collect::<Vec<_>>();
+        let tone = encode_wav(&frames).unwrap();
+        for _ in 0..2 {
+            unsafe { assert!(PlaySoundW(PCWSTR(tone.as_ptr().cast()), None, SND_MEMORY | SND_SYNC).as_bool()); }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        let captured = recorder.stop().unwrap();
+        let wav = hound::WavReader::new(captured.as_slice()).unwrap();
+        assert_eq!(wav.spec().sample_rate, SAMPLE_RATE);
+        assert_eq!(wav.spec().channels, CHANNELS);
+        let samples = wav.into_samples::<i16>().collect::<Result<Vec<_>,_>>().unwrap();
+        assert!(samples.len() > SAMPLE_RATE as usize);
+        let audible: Vec<_> = samples.chunks(800).enumerate()
+            .filter(|(_, samples)| has_speech(samples).0).map(|(i, _)| i).collect();
+        assert!(audible.windows(2).any(|pair| pair[1]-pair[0] >= 4), "Missing pause between tones: {audible:?}");
+    }
 
     #[test]
     fn test_device_identity_auto_detect_none() {
