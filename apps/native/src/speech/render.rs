@@ -10,6 +10,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[async_trait]
 pub(super) trait Player: Sync {
+    fn requires_complete_audio(&self) -> bool {
+        false
+    }
+
     async fn chunk(&self, audio: Vec<u8>) -> Result<(), String>;
     async fn file(&self, path: &Path) -> Result<(), String>;
 }
@@ -20,22 +24,24 @@ pub(super) struct WindowsPlayer {
 
 #[async_trait]
 impl Player for WindowsPlayer {
+    fn requires_complete_audio(&self) -> bool {
+        self.microphone.is_some()
+    }
+
     async fn chunk(&self, audio: Vec<u8>) -> Result<(), String> {
-        if let Some(mic) = &self.microphone {
-            return mic
-                .play(
-                    hound::WavReader::new(std::io::Cursor::new(audio))
-                        .map_err(|e| e.to_string())?,
-                )
-                .await;
-        }
         super::playback::play(audio).await
     }
     async fn file(&self, path: &Path) -> Result<(), String> {
         if let Some(mic) = &self.microphone {
-            return mic
+            let result = mic
                 .play(hound::WavReader::open(path).map_err(|e| e.to_string())?)
                 .await;
+            return match (result, mic.finish()) {
+                (Err(error), Err(restore)) => {
+                    Err(format!("{error} Microphone restoration pending: {restore}"))
+                }
+                (result, restore) => result.and(restore),
+            };
         }
         super::playback::play_file(path).await
     }
@@ -207,15 +213,23 @@ pub(super) async fn speak(
     let first = chunks.next().ok_or("No text to speak.")?;
     let mut audio = plan.chunk(state, base, key, first).await?;
     let mut render = PendingWav::new(&state.speech_audio_dir, &audio)?;
+    let complete_audio = player.requires_complete_audio();
     for next in chunks {
         render.append(&audio)?;
-        let (_, following) =
-            tokio::try_join!(player.chunk(audio), plan.chunk(state, base, key, next))?;
-        audio = following;
+        audio = if complete_audio {
+            plan.chunk(state, base, key, next).await?
+        } else {
+            tokio::try_join!(player.chunk(audio), plan.chunk(state, base, key, next))?.1
+        };
     }
     render.append(&audio)?;
-    player.chunk(audio).await?;
+    if !complete_audio {
+        player.chunk(audio).await?;
+    }
     render.finish()?;
+    if complete_audio {
+        player.file(&render.path).await?;
+    }
     with_cache(state, |c| c.put_file(&identity, &render.path))?;
     Ok(())
 }
@@ -354,12 +368,17 @@ mod tests {
         chunks: Mutex<Vec<i16>>,
         files: Mutex<Vec<(PathBuf, Vec<i16>)>>,
         overlap: bool,
+        complete_audio: bool,
         second_request: Arc<tokio::sync::Notify>,
         started: tokio::sync::Notify,
         block: bool,
     }
     #[async_trait]
     impl Player for Probe {
+        fn requires_complete_audio(&self) -> bool {
+            self.complete_audio
+        }
+
         async fn chunk(&self, audio: Vec<u8>) -> Result<(), String> {
             let value = hound::WavReader::new(&audio[..])
                 .unwrap()
@@ -398,6 +417,7 @@ mod tests {
             files: Default::default(),
             second_request,
             overlap,
+            complete_audio: false,
             started: Default::default(),
             block,
         }
@@ -577,7 +597,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn second_chunk_failure_keeps_no_partial_result() {
+    async fn second_chunk_failure_does_not_start_buffered_playback() {
         let dir = std::env::temp_dir().join(format!("dictto-failed-render-{}", std::process::id()));
         let (base, server, _, notify) = server(true).await;
         let settings = HashMap::from([
@@ -585,7 +605,10 @@ mod tests {
             ("tts_model".into(), "mock".into()),
         ]);
         let state = state(&dir);
-        let player = probe(notify, false, false);
+        let player = Probe {
+            complete_audio: true,
+            ..probe(notify, false, false)
+        };
         let text = format!("This is the first sentence. {}", "x".repeat(500));
         assert!(speak(
             &state,
@@ -598,6 +621,8 @@ mod tests {
         )
         .await
         .is_err());
+        assert!(player.chunks.lock().unwrap().is_empty());
+        assert!(player.files.lock().unwrap().is_empty());
         assert_eq!(
             std::fs::read_dir(&state.speech_audio_dir).unwrap().count(),
             0

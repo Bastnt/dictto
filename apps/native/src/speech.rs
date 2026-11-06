@@ -212,7 +212,7 @@ impl Action {
         let player = render::WindowsPlayer {
             microphone: use_virtual_mic.then(|| virtual_mic::Player::new(state.mic_route.clone())),
         };
-        let result = render::speak(
+        render::speak(
             &state,
             &settings,
             &key,
@@ -221,14 +221,7 @@ impl Action {
             sample.as_deref(),
             &player,
         )
-        .await;
-        let restored = player.microphone.as_ref().map_or(Ok(()), |p| p.finish());
-        match (result, restored) {
-            (Err(error), Err(restore)) => {
-                Err(format!("{error} Microphone restoration pending: {restore}"))
-            }
-            (result, restore) => result.and(restore),
-        }
+        .await
     }
 }
 
