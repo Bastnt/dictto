@@ -1,62 +1,14 @@
 use super::communications::{self, Defaults, WindowsDefaults};
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read};
-use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+use super::playback;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::HANDLE;
-use windows::Win32::System::IO::DeviceIoControl;
-
-const WRITE: u32 = 0x8000a004;
-const FLUSH: u32 = 0x8000a008;
-const DEPTH: u32 = 0x8000a00c;
-const ACTIVE: u32 = 0x8000a010;
-const RATE: u32 = 48000;
-const POLL: Duration = Duration::from_millis(10);
-
-struct Feed(File);
-impl Feed {
-    fn open() -> Result<Self, String> {
-        let file=OpenOptions::new().write(true).share_mode(0).open(r"\\.\DicttoMicFeed")
-            .map_err(|e|format!("Cannot open the Dictto virtual microphone driver. Check that it is installed and available ({e})."))?;
-        Ok(Self(file))
-    }
-    fn ioctl(&self, code: u32, input: &[i16], output: Option<&mut u32>) -> io::Result<()> {
-        let out_len = if output.is_some() { 4 } else { 0 };
-        let mut returned = 0;
-        unsafe {
-            DeviceIoControl(
-                HANDLE(self.0.as_raw_handle()),
-                code,
-                (!input.is_empty()).then(|| input.as_ptr().cast()),
-                std::mem::size_of_val(input) as u32,
-                output.map(|v| (v as *mut u32).cast()),
-                out_len,
-                Some(&mut returned),
-                None,
-            )
-            .map_err(|e| io::Error::from_raw_os_error((e.code().0 as u32 & 0xffff) as i32))?;
-        }
-        if returned != out_len {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid Dictto driver response length",
-            ));
-        }
-        Ok(())
-    }
-    fn status(&self, code: u32) -> io::Result<u32> {
-        let mut value = 0;
-        self.ioctl(code, &[], Some(&mut value))?;
-        Ok(value)
-    }
-}
+use windows::Win32::Media::Audio::eRender;
 
 struct Active {
     token: u64,
     target: String,
-    feed: Feed,
     checked: Instant,
 }
 #[derive(Default)]
@@ -117,6 +69,7 @@ impl Manager {
             );
         }
         WindowsDefaults.target()?;
+        communications::cable_endpoint(eRender)?;
         WindowsDefaults.current()?;
         Ok(())
     }
@@ -136,31 +89,24 @@ impl Manager {
         if !state.enabled {
             return Err("Virtual microphone routing was turned off.".into());
         }
-        let feed = Feed::open()?;
         let target = communications::acquire(self.journal()?, &WindowsDefaults)?;
         state.generation += 1;
         let token = state.generation;
         state.active = Some(Active {
             token,
             target,
-            feed,
             checked: Instant::now(),
         });
         Ok(token)
     }
-    fn call<T>(
-        &self,
-        token: u64,
-        check_now: bool,
-        f: impl FnOnce(&Feed) -> io::Result<T>,
-    ) -> Result<io::Result<T>, String> {
+    fn check_route(&self, token: u64) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
         let active = state
             .active
             .as_mut()
             .filter(|a| a.token == token)
             .ok_or("Virtual microphone playback was stopped.")?;
-        if check_now || active.checked.elapsed() >= Duration::from_millis(100) {
+        if active.checked.elapsed() >= Duration::from_millis(100) {
             if WindowsDefaults.current()? != active.target {
                 return Err(
                     "The communications microphone changed. Dictto stopped routing speech.".into(),
@@ -168,7 +114,7 @@ impl Manager {
             }
             active.checked = Instant::now();
         }
-        Ok(f(&active.feed))
+        Ok(())
     }
     fn end(&self, token: Option<u64>, closed: bool) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
@@ -180,11 +126,8 @@ impl Manager {
         {
             return Ok(());
         }
-        let active = state.active.take().unwrap();
-        let flush = active.feed.ioctl(FLUSH, &[], None);
-        drop(active);
-        communications::recover(self.journal()?, &WindowsDefaults)?;
-        flush.map_err(|e| format!("Cannot flush Dictto microphone: {e}"))
+        state.active = None;
+        communications::recover(self.journal()?, &WindowsDefaults)
     }
     pub(crate) fn session_changed(&self, suspended: bool) -> Result<(), String> {
         self.state.lock().unwrap().suspended = suspended;
@@ -212,36 +155,27 @@ impl Player {
             token: Mutex::new(None),
         }
     }
-    fn token(&self) -> Result<u64, String> {
-        let mut token = self.token.lock().unwrap();
-        if let Some(value) = *token {
-            return Ok(value);
-        }
-        let value = self.manager.begin()?;
-        *token = Some(value);
-        Ok(value)
-    }
     pub(super) async fn play<R: Read + Send>(
         &self,
         wav: hound::WavReader<R>,
     ) -> Result<(), String> {
-        let source = Mono48::new(wav)?;
-        if source.frames == 0 {
+        if wav.duration() == 0 {
             return Err("Empty speech WAV.".into());
         }
-        let token = self.token()?;
-        self.manager
-            .call(token, true, |_| Ok(()))?
-            .map_err(|e| e.to_string())?;
-        pump(
-            source,
-            &LiveSink {
-                manager: &self.manager,
-                token,
-            },
-            Duration::from_secs(8),
-        )
-        .await
+        let endpoint = communications::cable_endpoint(eRender)?;
+        let device_id = playback::device_id_for_endpoint(&endpoint)?;
+        let token = {
+            let mut slot = self.token.lock().unwrap();
+            let token = self.manager.begin()?;
+            *slot = Some(token);
+            token
+        };
+        // Give communications clients time to reopen capture after the default changes.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        playback::play_to(wav, device_id, || self.manager.check_route(token)).await?;
+        // WinMM completion can precede delivery of the last samples at the capture end.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        self.manager.check_route(token)
     }
     pub(super) fn finish(&self) -> Result<(), String> {
         let token = self.token.lock().unwrap().take();
@@ -260,250 +194,44 @@ impl Drop for Player {
     }
 }
 
-trait Sink {
-    fn active(&self) -> Result<bool, String>;
-    fn write(&self, samples: &[i16]) -> Result<bool, String>;
-    fn queued(&self) -> Result<u32, String>;
-}
-struct LiveSink<'a> {
-    manager: &'a Manager,
-    token: u64,
-}
-impl Sink for LiveSink<'_> {
-    fn active(&self) -> Result<bool, String> {
-        self.manager
-            .call(self.token, false, |feed| feed.status(ACTIVE))?
-            .map(|v| v != 0)
-            .map_err(|e| e.to_string())
-    }
-    fn write(&self, samples: &[i16]) -> Result<bool, String> {
-        match self
-            .manager
-            .call(self.token, false, |feed| feed.ioctl(WRITE, samples, None))?
-        {
-            Ok(()) => Ok(true),
-            Err(e) if e.raw_os_error() == Some(170) => Ok(false),
-            Err(e) => Err(format!(
-                "Dictto Microphone stopped receiving audio. Check the call's input device ({e})."
-            )),
-        }
-    }
-    fn queued(&self) -> Result<u32, String> {
-        self.manager
-            .call(self.token, false, |feed| feed.status(DEPTH))?
-            .map_err(|e| format!("Dictto Microphone stopped before the audio drained: {e}"))
-    }
-}
-
-async fn pump<R: Read>(
-    mut source: Mono48<R>,
-    sink: &impl Sink,
-    ready_timeout: Duration,
-) -> Result<(), String> {
-    let start = Instant::now();
-    while !sink.active()? {
-        if start.elapsed() >= ready_timeout {
-            return Err("No app opened Dictto Microphone. Start the Discord call and use its default input, then try again.".into());
-        }
-        tokio::time::sleep(POLL).await;
-    }
-    let mut packet = Vec::with_capacity(960);
-    loop {
-        source.fill(&mut packet)?;
-        if packet.is_empty() {
-            break;
-        }
-        let start = Instant::now();
-        while !sink.write(&packet)? {
-            if start.elapsed() >= Duration::from_secs(2) {
-                return Err("The Dictto microphone stopped consuming speech.".into());
-            }
-            tokio::time::sleep(POLL).await;
-        }
-    }
-    let start = Instant::now();
-    while sink.queued()? != 0 {
-        if start.elapsed() >= Duration::from_secs(2) {
-            return Err("Timed out draining the Dictto microphone.".into());
-        }
-        tokio::time::sleep(POLL).await;
-    }
-    // Give the capture client a final processing period after the DMA queue is empty.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    Ok(())
-}
-
-/// Keep two input frames for linear interpolation. Files and newly synthesized chunks use the same bounded converter.
-struct Mono48<R: Read> {
-    reader: hound::WavReader<R>,
-    channels: u16,
-    rate: u32,
-    left: i16,
-    right: i16,
-    input_frame: u64,
-    frames: u64,
-    position: u64,
-}
-impl<R: Read> Mono48<R> {
-    fn new(reader: hound::WavReader<R>) -> Result<Self, String> {
-        let spec = reader.spec();
-        if spec.sample_format != hound::SampleFormat::Int
-            || spec.bits_per_sample != 16
-            || spec.channels == 0
-            || spec.sample_rate == 0
-        {
-            return Err("Virtual microphone playback requires a 16-bit PCM WAV.".into());
-        }
-        let frames = u64::from(reader.duration());
-        let mut result = Self {
-            reader,
-            channels: spec.channels,
-            rate: spec.sample_rate,
-            left: 0,
-            right: 0,
-            input_frame: 0,
-            frames,
-            position: 0,
-        };
-        if frames > 0 {
-            result.left = result.frame()?;
-            result.right = if frames > 1 {
-                result.frame()?
-            } else {
-                result.left
-            };
-        }
-        Ok(result)
-    }
-    fn frame(&mut self) -> Result<i16, String> {
-        let mut sum = 0_i64;
-        for _ in 0..self.channels {
-            sum += i64::from(
-                self.reader
-                    .samples::<i16>()
-                    .next()
-                    .ok_or("Truncated speech WAV.")?
-                    .map_err(|e| e.to_string())?,
-            );
-        }
-        Ok((sum / i64::from(self.channels)) as i16)
-    }
-    fn fill(&mut self, buf: &mut Vec<i16>) -> Result<(), String> {
-        buf.clear();
-        while buf.len() < 960 && self.position < self.frames * u64::from(RATE) {
-            let index = self.position / u64::from(RATE);
-            while self.input_frame < index {
-                self.left = self.right;
-                self.input_frame += 1;
-                self.right = if self.input_frame + 1 < self.frames {
-                    self.frame()?
-                } else {
-                    self.left
-                };
-            }
-            let phase = (self.position % u64::from(RATE)) as i64;
-            let value = i64::from(self.left)
-                + (i64::from(self.right) - i64::from(self.left)) * phase / i64::from(RATE);
-            buf.push(value as i16);
-            self.position += u64::from(self.rate);
-        }
-        Ok(())
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[derive(Default)]
-    struct Probe {
-        polls: std::cell::Cell<u8>,
-        attempts: std::cell::Cell<u8>,
-        depth: std::cell::Cell<u8>,
-        sent: std::cell::RefCell<Vec<i16>>,
-    }
-    impl Sink for Probe {
-        fn active(&self) -> Result<bool, String> {
-            self.polls.set(self.polls.get() + 1);
-            Ok(self.polls.get() >= 2)
-        }
-        fn write(&self, samples: &[i16]) -> Result<bool, String> {
-            assert!(self.polls.get() >= 2);
-            self.attempts.set(self.attempts.get() + 1);
-            if self.attempts.get() == 1 {
-                return Ok(false);
-            }
-            self.sent.borrow_mut().extend_from_slice(samples);
-            Ok(true)
-        }
-        fn queued(&self) -> Result<u32, String> {
-            self.depth.set(self.depth.get() + 1);
-            Ok(if self.depth.get() == 1 { 2 } else { 0 })
-        }
-    }
-    fn test_stream() -> Mono48<io::Cursor<Vec<u8>>> {
-        let mut raw = io::Cursor::new(Vec::new());
+
+    #[tokio::test]
+    #[ignore = "requires an installed VB-CABLE and temporarily changes the communications mic"]
+    async fn cable_playback_restores_the_communications_input() {
+        let folder = std::env::temp_dir().join(format!("dictto-cable-test-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let manager = Arc::new(Manager::new(&folder));
+        manager.set_enabled(true).unwrap();
+        let original = WindowsDefaults.current().unwrap();
+        let target = WindowsDefaults.target().unwrap();
+        eprintln!("Original communications input is cable: {}", original == target);
+        let mut wav = std::io::Cursor::new(Vec::new());
         let mut writer = hound::WavWriter::new(
-            &mut raw,
+            &mut wav,
             hound::WavSpec {
                 channels: 1,
-                sample_rate: 48000,
-                bits_per_sample: 16,
-                sample_format: hound::SampleFormat::Int,
-            },
-        )
-        .unwrap();
-        for sample in 0..1200i16 {
-            writer.write_sample(sample).unwrap();
-        }
-        writer.finalize().unwrap();
-        Mono48::new(hound::WavReader::new(io::Cursor::new(raw.into_inner())).unwrap()).unwrap()
-    }
-    #[tokio::test]
-    async fn waits_for_consumer_retries_backpressure_and_drains_tail() {
-        let sink = Probe::default();
-        pump(test_stream(), &sink, Duration::from_secs(1))
-            .await
-            .unwrap();
-        assert_eq!(*sink.sent.borrow(), (0..1200i16).collect::<Vec<_>>());
-        assert_eq!(sink.depth.get(), 2);
-    }
-    #[tokio::test]
-    async fn no_consumer_cannot_receive_or_clip_the_first_packet() {
-        let sink = Probe::default();
-        assert!(pump(test_stream(), &sink, Duration::ZERO)
-            .await
-            .unwrap_err()
-            .contains("No app opened"));
-        assert!(sink.sent.borrow().is_empty());
-        assert_eq!(sink.depth.get(), 0);
-    }
-    #[test]
-    fn stereo_24khz_becomes_ms_sized_48khz_mono_packets() {
-        let mut raw = io::Cursor::new(Vec::new());
-        let mut wav = hound::WavWriter::new(
-            &mut raw,
-            hound::WavSpec {
-                channels: 2,
                 sample_rate: 24000,
                 bits_per_sample: 16,
                 sample_format: hound::SampleFormat::Int,
             },
         )
         .unwrap();
-        for i in 0..600i16 {
-            wav.write_sample(i * 2).unwrap();
-            wav.write_sample(i * 2 + 2).unwrap();
+        for frame in 0..24000 {
+            let signal = (f64::from(frame) * std::f64::consts::TAU * 631.0 / 24000.0).sin();
+            writer.write_sample((signal * 3000.0) as i16).unwrap();
         }
-        wav.finalize().unwrap();
-        let reader = hound::WavReader::new(io::Cursor::new(raw.into_inner())).unwrap();
-        let mut stream = Mono48::new(reader).unwrap();
-        let mut packet = Vec::new();
-        stream.fill(&mut packet).unwrap();
-        assert_eq!(packet.len(), 960);
-        assert_eq!(&packet[..4], &[1, 2, 3, 4]);
-        stream.fill(&mut packet).unwrap();
-        assert_eq!(packet.len(), 240);
-        assert_eq!(packet.last(), Some(&1199));
-        stream.fill(&mut packet).unwrap();
-        assert!(packet.is_empty());
+        writer.finalize().unwrap();
+        wav.set_position(0);
+        let player = Player::new(manager);
+        let result = player.play(hound::WavReader::new(wav).unwrap()).await;
+        let during = WindowsDefaults.current();
+        player.finish().unwrap();
+        assert_eq!(WindowsDefaults.current().unwrap(), original);
+        result.unwrap();
+        assert_eq!(during.unwrap(), target);
+        std::fs::remove_dir(folder).unwrap();
     }
 }

@@ -31,7 +31,7 @@ fn checked(result: u32) -> Result<(), String> {
 }
 
 impl Output {
-    fn open(spec: hound::WavSpec) -> Result<Self, String> {
+    fn open(spec: hound::WavSpec, device_id: u32) -> Result<Self, String> {
         if spec.sample_format != hound::SampleFormat::Int || spec.bits_per_sample != 16 {
             return Err("Speech playback requires a 16-bit PCM WAV.".into());
         }
@@ -56,7 +56,7 @@ impl Output {
         unsafe {
             checked(waveOutOpen(
                 Some(&mut device),
-                WAVE_MAPPER,
+                device_id,
                 &format,
                 None,
                 None,
@@ -131,14 +131,19 @@ impl Drop for Output {
     }
 }
 
-async fn play_reader<R: Read>(mut reader: hound::WavReader<R>) -> Result<(), String> {
+async fn play_reader<R: Read>(
+    mut reader: hound::WavReader<R>,
+    device_id: u32,
+    mut check_route: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     let spec = reader.spec();
-    let mut output = Output::open(spec)?;
+    let mut output = Output::open(spec, device_id)?;
     let channels = usize::from(spec.channels);
     let block = (BLOCK_SAMPLES / channels).max(1) * channels;
     let mut samples = reader.samples::<i16>();
     let mut ended = false;
     loop {
+        check_route()?;
         while output.queue.len() < 2 && !ended {
             let part = samples
                 .by_ref()
@@ -162,13 +167,60 @@ async fn play_reader<R: Read>(mut reader: hound::WavReader<R>) -> Result<(), Str
 pub(super) async fn play(wav: Vec<u8>) -> Result<(), String> {
     let reader =
         hound::WavReader::new(wav.as_slice()).map_err(|e| format!("Invalid speech WAV: {e}"))?;
-    play_reader(reader).await
+    play_reader(reader, WAVE_MAPPER, || Ok(())).await
 }
 
 pub(super) async fn play_file(path: &Path) -> Result<(), String> {
     let reader =
         hound::WavReader::open(path).map_err(|e| format!("Cannot read cached speech WAV: {e}"))?;
-    play_reader(reader).await
+    play_reader(reader, WAVE_MAPPER, || Ok(())).await
+}
+
+pub(super) fn device_id_for_endpoint(endpoint: &str) -> Result<u32, String> {
+    // mmddk.h: query the Core Audio endpoint ID for each WinMM device.
+    const QUERY_ID: u32 = 0x0811;
+    const QUERY_ID_SIZE: u32 = 0x0812;
+    unsafe {
+        for id in 0..waveOutGetNumDevs() {
+            let device = HWAVEOUT(id as usize as *mut _);
+            let mut bytes = 0u32;
+            if waveOutMessage(
+                Some(device),
+                QUERY_ID_SIZE,
+                &mut bytes as *mut u32 as usize,
+                0,
+            ) != 0
+                || bytes < 2
+                || bytes > 65536
+                || bytes % 2 != 0
+            {
+                continue;
+            }
+            let mut name = vec![0u16; bytes as usize / 2];
+            if waveOutMessage(
+                Some(device),
+                QUERY_ID,
+                name.as_mut_ptr() as usize,
+                bytes as usize,
+            ) == 0
+                && String::from_utf16_lossy(
+                    &name[..name.iter().position(|c| *c == 0).unwrap_or(name.len())],
+                )
+                .eq_ignore_ascii_case(endpoint)
+            {
+                return Ok(id);
+            }
+        }
+    }
+    Err("VB-CABLE's playback endpoint is not available to Windows audio playback.".into())
+}
+
+pub(super) async fn play_to<R: Read>(
+    reader: hound::WavReader<R>,
+    device_id: u32,
+    check_route: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    play_reader(reader, device_id, check_route).await
 }
 
 #[cfg(test)]

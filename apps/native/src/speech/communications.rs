@@ -10,6 +10,9 @@ pub(super) trait Defaults {
     fn current(&self) -> Result<String, String>;
     fn target(&self) -> Result<String, String>;
     fn set(&self, id: &str) -> Result<(), String>;
+    fn owns_route(&self, id: &str) -> Result<bool, String> {
+        Ok(self.target()? == id)
+    }
 }
 
 struct Apartment(bool);
@@ -57,7 +60,7 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
-unsafe fn belongs_to_driver(id: &str) -> bool {
+unsafe fn belongs_to_driver(id: &str, hardware_id: &str) -> bool {
     // Endpoint devnodes are children of the audio adapter. Friendly names can be renamed or duplicated.
     let instance = wide(&format!("SWD\\MMDEVAPI\\{id}"));
     let mut node = 0;
@@ -95,7 +98,7 @@ unsafe fn belongs_to_driver(id: &str) -> bool {
             {
                 if buffer
                     .split(|c| *c == 0)
-                    .any(|s| String::from_utf16_lossy(s).eq_ignore_ascii_case(r"ROOT\DICTTOMIC"))
+                    .any(|s| String::from_utf16_lossy(s).eq_ignore_ascii_case(hardware_id))
                 {
                     return true;
                 }
@@ -126,6 +129,52 @@ unsafe fn branded_capture(device: &IMMDevice) -> bool {
     value.Anonymous.Anonymous.vt == VT_UI4 && PropVariantToUInt32(&value).is_ok_and(|v| v == 1)
 }
 
+pub(super) fn cable_endpoint(flow: EDataFlow) -> Result<String, String> {
+    use windows::Win32::Foundation::PROPERTYKEY;
+    use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
+    const DEVICE_DESCRIPTION: PROPERTYKEY = PROPERTYKEY {
+        fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
+        pid: 2,
+    };
+    let _apartment = Apartment::open()?;
+    unsafe {
+        let devices = enumerator()
+            .and_then(|e| e.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE))
+            .map_err(|e| e.to_string())?;
+        let mut found = None;
+        for i in 0..devices.GetCount().map_err(|e| e.to_string())? {
+            let device = devices.Item(i).map_err(|e| e.to_string())?;
+            let id = endpoint_id(&device).map_err(|e| e.to_string())?;
+            if !belongs_to_driver(&id, "VBAudioVACWDM") {
+                continue;
+            }
+            if flow == eRender {
+                let value = device
+                    .OpenPropertyStore(STGM_READ)
+                    .and_then(|store| store.GetValue(&DEVICE_DESCRIPTION))
+                    .map_err(|e| e.to_string())?;
+                let name = PropVariantToStringAlloc(&value).map_err(|e| e.to_string())?;
+                let label = name.to_string();
+                CoTaskMemFree(Some(name.0.cast()));
+                if label
+                    .map_err(|e| e.to_string())?
+                    .to_ascii_lowercase()
+                    .starts_with("cable in 16")
+                {
+                    continue;
+                }
+            }
+            if found.replace(id).is_some() {
+                return Err(
+                    "Multiple VB-CABLE endpoints match. Keep one standalone VB-CABLE installation."
+                        .into(),
+                );
+            }
+        }
+        found.ok_or_else(|| "VB-CABLE is not available. Install it and enable both cable endpoints in Windows Sound.".into())
+    }
+}
+
 impl Defaults for WindowsDefaults {
     fn current(&self) -> Result<String, String> {
         let _apartment = Apartment::open()?;
@@ -140,27 +189,18 @@ impl Defaults for WindowsDefaults {
         }
     }
     fn target(&self) -> Result<String, String> {
+        cable_endpoint(eCapture)
+    }
+    fn owns_route(&self, id: &str) -> Result<bool, String> {
         let _apartment = Apartment::open()?;
         unsafe {
-            let devices = enumerator()
-                .and_then(|e| e.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE))
+            let name = wide(id);
+            let device = enumerator()
+                .and_then(|e| e.GetDevice(PCWSTR(name.as_ptr())))
                 .map_err(|e| e.to_string())?;
-            let mut found = None;
-            for i in 0..devices.GetCount().map_err(|e| e.to_string())? {
-                let Ok(device) = devices.Item(i) else {
-                    continue;
-                };
-                let Ok(id) = endpoint_id(&device) else {
-                    continue;
-                };
-                if branded_capture(&device) || belongs_to_driver(&id) {
-                    if found.is_some() {
-                        return Err("Multiple Dictto microphone endpoints are active. Keep a single driver installation.".into());
-                    }
-                    found = Some(id);
-                }
-            }
-            found.ok_or_else(||"The Dictto virtual microphone is not installed or is unavailable in this Windows session.".into())
+            Ok(belongs_to_driver(id, "VBAudioVACWDM")
+                || belongs_to_driver(id, r"ROOT\DICTTOMIC")
+                || branded_capture(&device))
         }
     }
     fn set(&self, id: &str) -> Result<(), String> {
@@ -225,8 +265,8 @@ pub(super) fn recover(path: &Path, defaults: &impl Defaults) -> Result<(), Strin
     let saved: Saved = serde_json::from_slice(&data)
         .map_err(|e| format!("Invalid microphone recovery file: {e}"))?;
     if defaults.current()? == saved.temporary {
-        if defaults.target()? != saved.temporary {
-            return Err("The journaled device is not this session's Dictto microphone.".into());
+        if !defaults.owns_route(&saved.temporary)? {
+            return Err("The journaled device is not a supported virtual microphone.".into());
         }
         defaults.set(&saved.original)?;
         observed_after_set(defaults, &saved.temporary)?;

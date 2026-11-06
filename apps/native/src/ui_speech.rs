@@ -228,7 +228,7 @@ impl App {
             .join(", ");
         self.label(&hint, [20, 313, 614, 31]);
         let mic_enabled = self.drafts.get("tts_virtual_mic").is_some_and(|v| v == "true");
-        self.check(625, "Send speech to Dictto Microphone", mic_enabled, [20, 348, 614, 24]);
+        self.check(625, "Send speech to VB-CABLE", mic_enabled, [20, 348, 614, 24]);
         self.label("Temporarily switches the Windows communications microphone during speech.", [20, 376, 614, 21]);
     }
 
