@@ -1,0 +1,8 @@
+[package]
+name = "dictto-windows"
+version = "0.2.0"
+edition = "2021"
+description = "Windows platform services shared by the Dictto apps"
+
+[dependencies]
+dictto-core = { path = "../dictto-core" }

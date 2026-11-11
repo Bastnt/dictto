@@ -1,0 +1,5 @@
+Baseline measured 2026-11-11, release build of dictto-native, before the workspace change (HEAD 0f0f638, isolated build).
+exe size: 9370112 bytes
+--smoke-test after 10 s (2 runs): WorkingSet64 20381696 / 19447808, PrivateMemorySize64 3063808 / 2998272, Threads 7
+After workspace (root target/): exe 9385984 bytes; WorkingSet64 19468288 / 19419136, PrivateMemorySize64 2985984 / 3002368, Threads 7 / 7
+Tests before: native 82 passed + 3 passed (4 ignored), tauri lib 54 passed

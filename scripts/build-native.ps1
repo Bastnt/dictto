@@ -6,7 +6,7 @@ if (-not $SkipBuild) {
     & cargo build --release --manifest-path $manifest
     if ($LASTEXITCODE -ne 0) { throw 'Native release build failed' }
 }
-$release = (Resolve-Path (Join-Path $projectRoot 'apps/native/target/release')).Path
+$release = (Resolve-Path (Join-Path $projectRoot 'target/release')).Path
 $destination = Join-Path $env:LOCALAPPDATA 'Programs/Dictto-Native'
 $executable = Join-Path $destination 'dictto-native.exe'
 Get-Process dictto-native -ErrorAction SilentlyContinue |

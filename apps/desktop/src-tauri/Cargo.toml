@@ -32,6 +32,8 @@ enigo = "0.6"
 arboard = "3"
 sys-locale = "0.3.2"
 keyring = { version = "3", features = ["windows-native"] }
+dictto-core = { path = "../../../crates/dictto-core" }
+dictto-windows = { path = "../../../crates/dictto-windows" }
 async-trait = "0.1"
 thiserror = "2"
 log = { version = "0.4", features = ["max_level_debug", "release_max_level_warn"] }

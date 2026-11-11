@@ -8,7 +8,7 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { throw 'Fleet release build failed' }
     } finally { Pop-Location }
 }
-$source = Join-Path $projectRoot 'apps/desktop/src-tauri/target/release/dictto.exe'
+$source = Join-Path $projectRoot 'target/release/dictto.exe'
 $destination = Join-Path $env:LOCALAPPDATA 'Programs/Dictto-Fleet'
 $executable = Join-Path $destination 'dictto.exe'
 New-Item -ItemType Directory -Path $destination -Force | Out-Null

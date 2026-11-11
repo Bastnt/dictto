@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/dictto-core",
+  "crates/dictto-windows",
+  "apps/native",
+  "apps/desktop/src-tauri",
+]
