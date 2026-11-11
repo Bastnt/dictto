@@ -1,5 +1,5 @@
 use crate::host::{AppHandle, Emitter};
-use crate::{services, MicrophoneInfo, SpeechState};
+use crate::{MicrophoneInfo, SpeechState};
 use dictto_core::CoreState;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -29,7 +29,8 @@ impl NativeRuntime {
         let mic_route = Arc::new(crate::speech::virtual_mic::Manager::new(&data_dir));
         let sample_path = data_dir.join("voice-sample.wav");
         let core = Arc::new(CoreState {
-            audio_recorder: Mutex::new(Box::new(services::audio::recorder::AudioRecorder::new())),
+            platform: dictto_windows::platform(),
+            audio_recorder: Mutex::new(Box::new(dictto_windows::WindowsRecorder::new())),
             db: Mutex::new(dictto_core::db::Database::new(data_dir).map_err(|e| e.to_string())?),
             http_client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(10))
@@ -73,7 +74,7 @@ impl NativeRuntime {
             .set_enabled(settings.get("tts_virtual_mic").is_some_and(|v| v == "true"))?;
         if settings.get("auto_start").map(String::as_str) == Some("true") {
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-            services::autostart::enable_autostart(&exe.to_string_lossy())?;
+            dictto_windows::autostart::enable_autostart(&exe.to_string_lossy())?;
         }
         if self.inner.started.swap(true, Ordering::AcqRel) {
             return Ok(());
@@ -84,7 +85,7 @@ impl NativeRuntime {
         }
         #[cfg(windows)]
         {
-            let tx = services::audio::device_monitor::spawn_monitor(
+            let tx = dictto_windows::device_monitor::spawn(
                 self.inner.state.device_monitor.clone(),
                 self.inner.app.clone(),
             );
@@ -101,11 +102,7 @@ impl NativeRuntime {
     fn start_dictation(&self, settings: &HashMap<String, String>) -> Result<(), String> {
         crate::speech::configure(crate::speech::parse_bindings(settings, false)?);
         dictto_core::dictation::set_speech_hooks(Box::<crate::speech::session::Hooks>::default());
-        dictto_core::dictation::start(
-            &self.inner.app,
-            Arc::new(services::injector::ClipboardInjector),
-            Arc::new(services::sound::WindowsSounds),
-        )?;
+        dictto_core::dictation::start(&self.inner.app)?;
         dictto_windows::keyboard::install()
     }
     pub fn speech_audio_dir(&self) -> PathBuf {
@@ -129,9 +126,9 @@ impl NativeRuntime {
         if key == "auto_start" {
             if value == "true" {
                 let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-                services::autostart::enable_autostart(&exe.to_string_lossy())?;
+                dictto_windows::autostart::enable_autostart(&exe.to_string_lossy())?;
             } else {
-                services::autostart::disable_autostart()?;
+                dictto_windows::autostart::disable_autostart()?;
             }
         }
         {
@@ -211,7 +208,7 @@ impl NativeRuntime {
         dictto_core::db::keystore::delete_api_key()
     }
     pub fn microphones(&self) -> Result<Vec<MicrophoneInfo>, String> {
-        services::audio::recorder::list_microphones().map_err(|e| e.to_string())
+        self.inner.state.platform.devices.list_microphones().map_err(|e| e.to_string())
     }
     pub fn current_microphone(&self) -> String {
         self.inner.state.device_monitor.get_device_name()
@@ -246,7 +243,7 @@ impl NativeRuntime {
         self.set_hotkey_capture(true);
         self.cancel_recording();
         if let Ok(mut recorder) = self.inner.state.audio_recorder.lock() {
-            let mut replacement = services::audio::recorder::AudioRecorder::new();
+            let mut replacement = dictto_windows::WindowsRecorder::new();
             replacement.set_app_handle(self.inner.app.clone());
             let retired = std::mem::replace(&mut *recorder, Box::new(replacement));
             drop(recorder);

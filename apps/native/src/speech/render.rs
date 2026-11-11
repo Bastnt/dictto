@@ -351,9 +351,8 @@ mod tests {
         let dir = directory.join("Speech Audio");
         SpeechState {
             core: Arc::new(dictto_core::CoreState {
-                audio_recorder: Mutex::new(Box::new(
-                    crate::services::audio::recorder::AudioRecorder::new(),
-                )),
+                platform: dictto_windows::platform(),
+                audio_recorder: Mutex::new(Box::new(dictto_windows::WindowsRecorder::new())),
                 db: Mutex::new(dictto_core::db::Database::new(directory.into()).unwrap()),
                 http_client: reqwest::Client::new(),
                 device_monitor: Arc::new(dictto_core::audio::DeviceMonitorState::new()),

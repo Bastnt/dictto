@@ -1,8 +1,8 @@
-pub use crate::services::audio::MicrophoneInfo;
+pub use dictto_windows::MicrophoneInfo;
 
 #[tauri::command]
 pub fn list_microphones() -> Result<Vec<MicrophoneInfo>, String> {
-    crate::services::audio::recorder::list_microphones().map_err(|e| e.to_string())
+    dictto_windows::recorder::list_microphones().map_err(|e| e.to_string())
 }
 
 /// Returns the friendly name of the device the monitor currently tracks.

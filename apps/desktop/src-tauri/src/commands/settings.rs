@@ -1,4 +1,4 @@
-use crate::services::autostart;
+use dictto_windows::autostart;
 use dictto_core::CoreState;
 use std::sync::Arc;
 use std::collections::HashMap;

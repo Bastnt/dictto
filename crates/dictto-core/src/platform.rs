@@ -1,4 +1,5 @@
-use crate::audio::{AudioError, DeviceSelection};
+use crate::audio::{AudioError, DeviceSelection, MicrophoneInfo};
+use std::sync::Arc;
 use crate::host::AppHandle;
 
 pub trait Recorder: Send {
@@ -30,4 +31,16 @@ pub enum Sound {
 
 pub trait Sounds: Send + Sync {
     fn play(&self, sound: Sound);
+}
+
+pub trait Devices: Send + Sync {
+    fn list_microphones(&self) -> Result<Vec<MicrophoneInfo>, AudioError>;
+}
+
+/// OS services the core reaches through traits. The recorder stays in
+/// `CoreState::audio_recorder` because hosts swap it at shutdown.
+pub struct Platform {
+    pub injector: Arc<dyn TextInjector>,
+    pub sounds: Arc<dyn Sounds>,
+    pub devices: Arc<dyn Devices>,
 }

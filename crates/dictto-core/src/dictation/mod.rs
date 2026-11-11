@@ -3,7 +3,7 @@ use crate::audio::DeviceSelection;
 use crate::host::{self as tauri, AppHandle, Emitter, Manager};
 use crate::keys;
 use crate::pipeline::RecordedAudio;
-use crate::platform::{Sound, Sounds, TextInjector};
+use crate::platform::{Sound, Sounds};
 use std::sync::{Arc, Mutex, OnceLock};
 
 static TRACKER: OnceLock<Mutex<keys::Tracker>> = OnceLock::new();
@@ -269,8 +269,9 @@ fn hotkey_from_setting(value: Option<&str>) -> keys::Chord {
 
 /// Configures the stored dictation shortcut and spawns the state machine.
 /// Installs no OS hook: keyboard sources call `key_event`.
-pub fn start(app: &AppHandle, injector: Arc<dyn TextInjector>, sounds: Arc<dyn Sounds>) -> Result<(), String> {
+pub fn start(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<crate::CoreState>();
+    let sounds = state.platform.sounds.clone();
     let value = state.db.lock().unwrap().get_setting("hotkey");
     configure(hotkey_from_setting(value.as_deref()));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HotkeyEvent>();
@@ -326,7 +327,7 @@ pub fn start(app: &AppHandle, injector: Arc<dyn TextInjector>, sounds: Arc<dyn S
         let pipeline_app = app_handle.clone();
         tauri::async_runtime::spawn(async move {
             while let Some(audio) = pipeline_rx.recv().await {
-                let result = crate::pipeline::run_pipeline(&pipeline_app, &audio, &*injector).await;
+                let result = crate::pipeline::run_pipeline(&pipeline_app, &audio).await;
                 match &result {
                     Ok(()) => {}
                     Err(error) => {

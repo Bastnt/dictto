@@ -16,7 +16,6 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.13", features = ["json", "multipart"] }
 hound = "3.5"
 ring = "0.17"
-enigo = "0.6"
 arboard = "3"
 dictto-core = { path = "../../crates/dictto-core" }
 dictto-windows = { path = "../../crates/dictto-windows" }

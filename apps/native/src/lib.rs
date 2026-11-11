@@ -1,10 +1,7 @@
 pub use dictto_core::host;
 pub mod speech_api;
 pub(crate) mod speech;
-#[path = "../../desktop/src-tauri/src/services/mod.rs"]
-pub mod services;
-#[path = "../../desktop/src-tauri/src/instance.rs"]
-pub mod instance;
+pub use dictto_windows::instance;
 pub mod runtime;
 pub use dictto_core::audio::MicrophoneInfo;
 pub use runtime::NativeRuntime;

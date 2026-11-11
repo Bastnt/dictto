@@ -1,5 +1,4 @@
 mod host;
-mod instance;
 mod commands;
 mod services;
 mod tray;
@@ -15,7 +14,7 @@ use tauri::WebviewWindowBuilder;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let _instance = match instance::InstanceGuard::acquire() {
+    let _instance = match dictto_windows::instance::InstanceGuard::acquire() {
         Ok(guard) => guard,
         Err(error) => { eprintln!("{error}"); return; }
     };
@@ -24,7 +23,7 @@ pub fn run() {
         eprintln!("{error}");
         return;
     }
-    let audio_recorder = services::audio::recorder::AudioRecorder::new();
+    let audio_recorder = dictto_windows::WindowsRecorder::new();
     let http_client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .build()
@@ -70,6 +69,7 @@ pub fn run() {
 
             let device_monitor_state = Arc::new(dictto_core::audio::DeviceMonitorState::new());
             let state = Arc::new(CoreState {
+                platform: dictto_windows::platform(),
                 audio_recorder: Mutex::new(Box::new(audio_recorder)),
                 db: Mutex::new(db),
                 http_client,
@@ -88,7 +88,7 @@ pub fn run() {
             // Spawn device monitor thread (Windows only — cfg guard inside spawn_monitor)
             #[cfg(windows)]
             {
-                let shutdown_tx = services::audio::device_monitor::spawn_monitor(
+                let shutdown_tx = dictto_windows::device_monitor::spawn(
                     device_monitor_state,
                     core.clone(),
                 );
@@ -103,7 +103,7 @@ pub fn run() {
                 let db = state.db.lock().unwrap();
                 if db.get_setting("auto_start").as_deref() == Some("true") {
                     if let Ok(exe_path) = std::env::current_exe() {
-                        let _ = services::autostart::enable_autostart(&exe_path.to_string_lossy());
+                        let _ = dictto_windows::autostart::enable_autostart(&exe_path.to_string_lossy());
                     }
                 }
             }
@@ -113,11 +113,7 @@ pub fn run() {
 
             dictto_core::warmup::schedule(&core);
             tray::setup_tray(app)?;
-            dictto_core::dictation::start(
-                &core,
-                std::sync::Arc::new(services::injector::ClipboardInjector),
-                std::sync::Arc::new(services::sound::WindowsSounds),
-            )?;
+            dictto_core::dictation::start(&core)?;
             dictto_windows::keyboard::install()?;
 
             // Create recording bar overlay window

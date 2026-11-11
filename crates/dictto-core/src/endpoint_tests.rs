@@ -217,3 +217,58 @@ async fn transcription_does_not_retry_unauthorized_requests() {
     assert!(result.err().unwrap().to_string().contains("401"));
     assert_eq!(requests.len(), 1);
 }
+
+struct NoRecorder;
+impl super::platform::Recorder for NoRecorder {
+    fn set_app_handle(&mut self, _: super::host::AppHandle) {}
+    fn start(&mut self, _: super::audio::DeviceSelection) -> Result<(), super::audio::AudioError> { unreachable!() }
+    fn stop(&mut self) -> Result<Vec<u8>, super::audio::AudioError> { unreachable!() }
+    fn cancel(&mut self) {}
+    fn is_recording(&self) -> bool { false }
+}
+struct NoSounds;
+impl super::platform::Sounds for NoSounds {
+    fn play(&self, _: super::platform::Sound) {}
+}
+struct NoDevices;
+impl super::platform::Devices for NoDevices {
+    fn list_microphones(&self) -> Result<Vec<super::audio::MicrophoneInfo>, super::audio::AudioError> { Ok(vec![]) }
+}
+struct RecordingInjector(std::sync::Mutex<Vec<(String, u64)>>);
+#[async_trait::async_trait]
+impl super::platform::TextInjector for RecordingInjector {
+    async fn inject(&self, text: &str, paste_delay_ms: u64) -> Result<std::time::Instant, super::platform::InjectionError> {
+        self.0.lock().unwrap().push((text.to_string(), paste_delay_ms));
+        Ok(std::time::Instant::now())
+    }
+}
+
+#[tokio::test]
+async fn pipeline_uses_platform_injector() {
+    let _activity = ACTIVITY_TEST.lock().await;
+    let (base, request) = endpoint(r#"{"text":"Bonjour"}"#);
+    let dir = std::env::temp_dir().join(format!("dictto-core-pipeline-{}", std::process::id()));
+    let db = super::db::Database::new(dir.clone()).unwrap();
+    db.set_setting("api_base_url", &base).unwrap();
+    db.set_setting("cleanup_enabled", "false").unwrap();
+    db.set_setting("paste_delay_ms", "7").unwrap();
+    let injector = std::sync::Arc::new(RecordingInjector(Default::default()));
+    let state = std::sync::Arc::new(super::CoreState {
+        platform: super::platform::Platform {
+            injector: injector.clone(),
+            sounds: std::sync::Arc::new(NoSounds),
+            devices: std::sync::Arc::new(NoDevices),
+        },
+        audio_recorder: std::sync::Mutex::new(Box::new(NoRecorder)),
+        db: std::sync::Mutex::new(db),
+        http_client: reqwest::Client::new(),
+        device_monitor: std::sync::Arc::new(super::audio::DeviceMonitorState::new()),
+        device_monitor_shutdown: std::sync::Mutex::new(None),
+    });
+    let app = super::host::AppHandle::new(&state, std::sync::Arc::new(|_: &str, _: serde_json::Value| {}));
+    let recording = super::pipeline::RecordedAudio { data: b"wav".to_vec(), released_at: std::time::Instant::now() };
+    super::pipeline::run_pipeline_with_key(&app, &recording, "test-key".into()).await.unwrap();
+    request.join().unwrap();
+    assert_eq!(*injector.0.lock().unwrap(), vec![("Bonjour".to_string(), 7)]);
+    let _ = std::fs::remove_dir_all(dir);
+}

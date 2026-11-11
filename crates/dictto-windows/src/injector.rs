@@ -5,10 +5,10 @@ use std::time::{Duration, Instant};
 pub use dictto_core::platform::InjectionError;
 
 /// Pastes through the clipboard and a simulated Ctrl+V.
-pub struct ClipboardInjector;
+pub struct WindowsInjector;
 
 #[async_trait::async_trait]
-impl dictto_core::platform::TextInjector for ClipboardInjector {
+impl dictto_core::platform::TextInjector for WindowsInjector {
     async fn inject(&self, text: &str, paste_delay_ms: u64) -> Result<Instant, InjectionError> {
         inject_text(text, paste_delay_ms).await
     }

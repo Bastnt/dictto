@@ -730,11 +730,9 @@ dependencies = [
 name = "dictto"
 version = "0.2.0"
 dependencies = [
- "arboard",
  "async-trait",
  "dictto-core",
  "dictto-windows",
- "enigo",
  "hound",
  "log",
  "reqwest",
@@ -750,7 +748,6 @@ dependencies = [
  "tokio",
  "windows 0.62.2",
  "windows-core 0.62.2",
- "winreg",
 ]
 
 [[package]]
@@ -778,7 +775,6 @@ dependencies = [
  "async-trait",
  "dictto-core",
  "dictto-windows",
- "enigo",
  "hound",
  "log",
  "reqwest",
@@ -797,9 +793,18 @@ dependencies = [
 name = "dictto-windows"
 version = "0.2.0"
 dependencies = [
+ "arboard",
+ "async-trait",
  "dictto-core",
+ "enigo",
+ "hound",
  "keyring",
+ "log",
+ "serde_json",
+ "tokio",
  "windows 0.62.2",
+ "windows-core 0.62.2",
+ "winreg",
 ]
 
 [[package]]

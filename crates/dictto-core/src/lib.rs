@@ -16,6 +16,7 @@ mod endpoint_tests;
 use std::sync::{Arc, Mutex};
 
 pub struct CoreState {
+    pub platform: platform::Platform,
     pub audio_recorder: Mutex<Box<dyn platform::Recorder>>,
     pub db: Mutex<db::Database>,
     pub http_client: reqwest::Client,

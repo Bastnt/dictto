@@ -2,8 +2,8 @@ use dictto_core::platform::{Sound, Sounds};
 use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 use windows::core::PCWSTR;
 
-static START_WAV: &[u8] = include_bytes!("../../../assets/sounds/start.wav");
-static STOP_WAV: &[u8] = include_bytes!("../../../assets/sounds/stop.wav");
+static START_WAV: &[u8] = include_bytes!("../assets/sounds/start.wav");
+static STOP_WAV: &[u8] = include_bytes!("../assets/sounds/stop.wav");
 
 /// Plays sound effects without blocking.
 ///

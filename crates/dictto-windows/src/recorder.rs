@@ -8,8 +8,9 @@ use dictto_core::audio::dsp::{
     encode_wav, has_speech, resample, to_mono_i16, to_mono_i16_f32, CHANNELS, SAMPLE_RATE,
     SILENCE_RMS_THRESHOLD,
 };
-use crate::services::audio::MicrophoneInfo;
-use crate::services::audio::device_monitor::{playback_generation, DeviceSelection};
+use dictto_core::audio::MicrophoneInfo;
+use crate::device_monitor::playback_generation;
+use dictto_core::audio::DeviceSelection;
 
 /// Emit waveform data every ~64ms (1024 samples at 16kHz)
 const WAVEFORM_EMIT_SAMPLES: usize = 1024;
@@ -18,7 +19,7 @@ const WAVEFORM_BARS: usize = 24;
 /// Minimum samples to consider a valid recording (~0.3s at 16kHz)
 const MIN_RECORDING_SAMPLES: usize = 4800;
 
-/// Commands sent from AudioRecorder to the persistent capture thread.
+/// Commands sent from WindowsRecorder to the persistent capture thread.
 enum CaptureCmd {
     /// Begin capturing audio with the current device selection.
     /// Carries a fresh DeviceSelection so the thread uses the latest endpoint ID.
@@ -29,7 +30,7 @@ enum CaptureCmd {
     Shutdown,
 }
 
-/// Results sent from the capture thread back to AudioRecorder.
+/// Results sent from the capture thread back to WindowsRecorder.
 enum CaptureResult {
     /// Capture loop is now running (or WASAPI init succeeded on thread start).
     Started,
@@ -42,7 +43,7 @@ enum CaptureResult {
     ShutdownAck,
 }
 
-pub struct AudioRecorder {
+pub struct WindowsRecorder {
     /// Send commands to the capture thread.
     cmd_tx: Option<mpsc::Sender<CaptureCmd>>,
     /// Receive results from the capture thread.
@@ -58,7 +59,7 @@ pub struct AudioRecorder {
     current_device: Option<Option<String>>,
 }
 
-impl AudioRecorder {
+impl WindowsRecorder {
     pub fn new() -> Self {
         Self {
             cmd_tx: None,
@@ -98,7 +99,7 @@ impl AudioRecorder {
         let app_handle = self.app_handle.clone();
 
         log::info!(
-            "[AudioRecorder] Spawning capture thread for device={:?}",
+            "[WindowsRecorder] Spawning capture thread for device={:?}",
             device
         );
 
@@ -121,11 +122,11 @@ impl AudioRecorder {
         // or Error (init failed, thread exiting).
         match self.result_rx.as_ref().unwrap().recv() {
             Ok(CaptureResult::Started) => {
-                log::info!("[AudioRecorder] Capture thread initialized successfully");
+                log::info!("[WindowsRecorder] Capture thread initialized successfully");
                 Ok(())
             }
             Ok(CaptureResult::Error(msg, _alive)) => {
-                log::error!("[AudioRecorder] Capture thread init failed: {}", msg);
+                log::error!("[WindowsRecorder] Capture thread init failed: {}", msg);
                 self.cleanup_dead_thread();
                 Err(AudioError::DeviceError(msg))
             }
@@ -171,7 +172,7 @@ impl AudioRecorder {
             return Err(AudioError::AlreadyRecording);
         }
 
-        log::debug!("[AudioRecorder] start() device={:?}", device);
+        log::debug!("[WindowsRecorder] start() device={:?}", device);
 
         // Ensure thread is running (lazy init or device change)
         let render_generation = matches!(&device, DeviceSelection::PlaybackLoopback).then(playback_generation);
@@ -196,14 +197,14 @@ impl AudioRecorder {
                 Ok(())
             }
             Ok(CaptureResult::Error(msg, alive)) => {
-                log::error!("[AudioRecorder] Start failed: {}", msg);
+                log::error!("[WindowsRecorder] Start failed: {}", msg);
                 if !alive {
                     self.cleanup_dead_thread();
                 }
                 Err(AudioError::DeviceError(msg))
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                log::error!("[AudioRecorder] Start command timed out (10s)");
+                log::error!("[WindowsRecorder] Start command timed out (10s)");
                 self.cleanup_dead_thread();
                 Err(AudioError::DeviceError(
                     "Start timed out — audio device unresponsive".into(),
@@ -223,7 +224,7 @@ impl AudioRecorder {
             return Err(AudioError::NotRecording);
         }
 
-        log::debug!("[AudioRecorder] stop() — sending Stop command");
+        log::debug!("[WindowsRecorder] stop() — sending Stop command");
 
         let tx = self.cmd_tx.as_ref().ok_or_else(|| {
             self.recording = false;
@@ -242,7 +243,7 @@ impl AudioRecorder {
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(CaptureResult::Samples(samples)) => {
                 log::debug!(
-                    "[AudioRecorder] Samples received: {} ({:.1}s at {}Hz)",
+                    "[WindowsRecorder] Samples received: {} ({:.1}s at {}Hz)",
                     samples.len(),
                     samples.len() as f64 / SAMPLE_RATE as f64,
                     SAMPLE_RATE,
@@ -254,7 +255,7 @@ impl AudioRecorder {
 
                 let (speech_detected, peak_rms) = has_speech(&samples);
                 log::debug!(
-                    "[AudioRecorder] Speech detection — peak RMS: {:.1}, threshold: {:.1}, detected: {}",
+                    "[WindowsRecorder] Speech detection — peak RMS: {:.1}, threshold: {:.1}, detected: {}",
                     peak_rms, SILENCE_RMS_THRESHOLD, speech_detected
                 );
 
@@ -265,14 +266,14 @@ impl AudioRecorder {
                 encode_wav(&samples)
             }
             Ok(CaptureResult::Error(msg, alive)) => {
-                log::error!("[AudioRecorder] Stop failed: {}", msg);
+                log::error!("[WindowsRecorder] Stop failed: {}", msg);
                 if !alive {
                     self.cleanup_dead_thread();
                 }
                 Err(AudioError::DeviceError(msg))
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                log::error!("[AudioRecorder] Stop command timed out (5s)");
+                log::error!("[WindowsRecorder] Stop command timed out (5s)");
                 self.cleanup_dead_thread();
                 Err(AudioError::DeviceError(
                     "Stop timed out — audio device unresponsive".into(),
@@ -288,7 +289,7 @@ impl AudioRecorder {
     }
 }
 
-impl Drop for AudioRecorder {
+impl Drop for WindowsRecorder {
     fn drop(&mut self) {
         self.shutdown_thread();
     }
@@ -335,9 +336,9 @@ fn capture_thread_main(
     app_handle: Option<tauri::AppHandle>,
 ) {
     match capture_thread_inner(&device, &cmd_rx, &result_tx, &app_handle) {
-        Ok(()) => log::info!("[AudioRecorder] Capture thread exiting cleanly"),
+        Ok(()) => log::info!("[WindowsRecorder] Capture thread exiting cleanly"),
         Err(e) => {
-            log::error!("[AudioRecorder] Capture thread fatal error: {}", e);
+            log::error!("[WindowsRecorder] Capture thread fatal error: {}", e);
             let _ = result_tx.send(CaptureResult::Error(e.to_string(), false));
         }
     }
@@ -383,8 +384,8 @@ fn capture_thread_inner(
             let cmd = match cmd_rx.recv() {
                 Ok(cmd) => cmd,
                 Err(_) => {
-                    // Sender dropped — AudioRecorder was dropped without Shutdown
-                    log::debug!("[AudioRecorder] Command channel closed, exiting");
+                    // Sender dropped — WindowsRecorder was dropped without Shutdown
+                    log::debug!("[WindowsRecorder] Command channel closed, exiting");
                     break;
                 }
             };
@@ -394,18 +395,18 @@ fn capture_thread_inner(
                     // Re-init WASAPI if it was released after previous Stop.
                     // Use fresh_device (not spawn-time device) so we get the current endpoint.
                     if wasapi.is_none() {
-                        log::debug!("[AudioRecorder] Re-initializing WASAPI for new recording...");
+                        log::debug!("[WindowsRecorder] Re-initializing WASAPI for new recording...");
                         let t = std::time::Instant::now();
                         match init_wasapi_device(&fresh_device, &pkey_friendly_name) {
                             Ok(w) => {
                                 log::info!(
-                                    "[AudioRecorder] WASAPI re-initialized in {:?}",
+                                    "[WindowsRecorder] WASAPI re-initialized in {:?}",
                                     t.elapsed()
                                 );
                                 wasapi = Some(w);
                             }
                             Err(e) => {
-                                log::error!("[AudioRecorder] WASAPI re-init failed: {}", e);
+                                log::error!("[WindowsRecorder] WASAPI re-init failed: {}", e);
                                 let _ =
                                     result_tx.send(CaptureResult::Error(e.to_string(), true));
                                 continue;
@@ -422,7 +423,7 @@ fn capture_thread_inner(
                         Ok(()) => {}
                         Err(e) if is_device_invalidated(&e) => {
                             log::warn!(
-                                "[AudioRecorder] Device invalidated on Start, reinitializing..."
+                                "[WindowsRecorder] Device invalidated on Start, reinitializing..."
                             );
                             // Drop stale objects before reinit
                             wasapi = None;
@@ -449,7 +450,7 @@ fn capture_thread_inner(
                                     continue;
                                 }
                                 Err(e2) => {
-                                    log::error!("[AudioRecorder] Reinit failed: {}", e2);
+                                    log::error!("[WindowsRecorder] Reinit failed: {}", e2);
                                     let _ = result_tx
                                         .send(CaptureResult::Error(e2.to_string(), false));
                                     return Err(e2);
@@ -482,7 +483,7 @@ fn capture_thread_inner(
                     // Release WASAPI objects immediately after Stop.
                     // This lets BT headphones switch back to A2DP (high-quality playback).
                     // COM stays initialized on this thread — only WASAPI objects are released.
-                    log::debug!("[AudioRecorder] Releasing WASAPI objects (BT A2DP restore)");
+                    log::debug!("[WindowsRecorder] Releasing WASAPI objects (BT A2DP restore)");
                     wasapi = None;
 
                     if should_exit {
@@ -494,13 +495,13 @@ fn capture_thread_inner(
                 CaptureCmd::Stop => {
                     // Not recording — send empty samples
                     log::debug!(
-                        "[AudioRecorder] Stop received but not recording, sending empty"
+                        "[WindowsRecorder] Stop received but not recording, sending empty"
                     );
                     let _ = result_tx.send(CaptureResult::Samples(Vec::new()));
                 }
 
                 CaptureCmd::Shutdown => {
-                    log::info!("[AudioRecorder] Shutdown command received");
+                    log::info!("[WindowsRecorder] Shutdown command received");
                     if let Some((ref ac, _, _, _, _)) = wasapi {
                         let _ = ac.Stop();
                     }
@@ -591,7 +592,7 @@ unsafe fn init_wasapi_device(
     let device_bits = mix_format.wBitsPerSample;
 
     log::info!(
-        "[AudioRecorder] Device format: {}Hz, {}ch, {}bit",
+        "[WindowsRecorder] Device format: {}Hz, {}ch, {}bit",
         device_sample_rate,
         device_channels,
         device_bits
@@ -615,7 +616,7 @@ unsafe fn init_wasapi_device(
         .GetService()
         .map_err(|e| AudioError::DeviceError(format!("GetService failed: {}", e)))?;
 
-    log::info!("[AudioRecorder] WASAPI initialized successfully (polling mode)");
+    log::info!("[WindowsRecorder] WASAPI initialized successfully (polling mode)");
     Ok((
         audio_client,
         capture_client,
@@ -674,7 +675,7 @@ unsafe fn reinit_and_start(
     ),
     AudioError,
 > {
-    log::info!("[AudioRecorder] Re-initializing WASAPI after device invalidation...");
+    log::info!("[WindowsRecorder] Re-initializing WASAPI after device invalidation...");
     let (client, capture, sr, ch, bits) = init_wasapi_device(device, pkey_friendly_name)?;
     start_capture(&client)?;
     Ok((client, capture, sr, ch, bits))
@@ -714,7 +715,7 @@ unsafe fn capture_loop(
                 let _ = audio_client.Stop();
                 let elapsed = capture_start.elapsed();
                 log::info!(
-                    "[AudioRecorder] Capture stopped — {:.1}s, {} packets ({} silent), {} samples",
+                    "[WindowsRecorder] Capture stopped — {:.1}s, {} packets ({} silent), {} samples",
                     elapsed.as_secs_f64(),
                     total_packets,
                     silent_packets,
@@ -736,17 +737,17 @@ unsafe fn capture_loop(
             }
             Ok(CaptureCmd::Shutdown) => {
                 let _ = audio_client.Stop();
-                log::info!("[AudioRecorder] Shutdown during capture");
+                log::info!("[WindowsRecorder] Shutdown during capture");
                 let _ = result_tx.send(CaptureResult::ShutdownAck);
                 return true;
             }
             Ok(CaptureCmd::Start(_, _)) => {
-                log::warn!("[AudioRecorder] Ignoring duplicate Start command during capture");
+                log::warn!("[WindowsRecorder] Ignoring duplicate Start command during capture");
             }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
                 let _ = audio_client.Stop();
-                log::debug!("[AudioRecorder] Command channel closed during capture");
+                log::debug!("[WindowsRecorder] Command channel closed during capture");
                 return true;
             }
         }
@@ -758,7 +759,7 @@ unsafe fn capture_loop(
         // Log stats every ~20 seconds
         if loop_iterations % 2000 == 0 {
             log::debug!(
-                "[AudioRecorder] Capture loop: {} iterations, {} packets, {} silent, {:.1}s",
+                "[WindowsRecorder] Capture loop: {} iterations, {} packets, {} silent, {:.1}s",
                 loop_iterations,
                 total_packets,
                 silent_packets,
@@ -771,7 +772,7 @@ unsafe fn capture_loop(
             let packet_size = match capture_client.GetNextPacketSize() {
                 Ok(size) => size,
                 Err(e) => {
-                    log::error!("[AudioRecorder] GetNextPacketSize error: {}", e);
+                    log::error!("[WindowsRecorder] GetNextPacketSize error: {}", e);
                     let _ = audio_client.Stop();
                     let _ = result_tx.send(CaptureResult::Error(
                         format!("GetNextPacketSize: {}", e),
@@ -798,7 +799,7 @@ unsafe fn capture_loop(
                 Some(&mut device_position),
                 Some(&mut qpc_position),
             ) {
-                log::error!("[AudioRecorder] GetBuffer error: {}", e);
+                log::error!("[WindowsRecorder] GetBuffer error: {}", e);
                 let _ = audio_client.Stop();
                 let _ = result_tx
                     .send(CaptureResult::Error(format!("GetBuffer: {}", e), false));
@@ -916,7 +917,7 @@ unsafe fn resolve_auto_fallback(
     enumerator
         .GetDefaultAudioEndpoint(eCapture, eConsole)
         .or_else(|_| {
-            log::warn!("[AudioRecorder] eConsole default not found, trying eCommunications");
+            log::warn!("[WindowsRecorder] eConsole default not found, trying eCommunications");
             enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications)
         })
         .or_else(|_| enumerator.GetDefaultAudioEndpoint(eCapture, eMultimedia))
@@ -941,12 +942,12 @@ unsafe fn resolve_device(
             let pcwstr = PCWSTR(wide_id.as_ptr());
             match enumerator.GetDevice(pcwstr) {
                 Ok(dev) => {
-                    log::info!("[AudioRecorder] Resolved device by monitor endpoint ID");
+                    log::info!("[WindowsRecorder] Resolved device by monitor endpoint ID");
                     Ok(dev)
                 }
                 Err(e) => {
                     log::warn!(
-                        "[AudioRecorder] Monitor endpoint ID not found ({}), falling back to system default",
+                        "[WindowsRecorder] Monitor endpoint ID not found ({}), falling back to system default",
                         e
                     );
                     resolve_auto_fallback(enumerator)
@@ -954,7 +955,7 @@ unsafe fn resolve_device(
             }
         }
         DeviceSelection::AutoDetect(None) => {
-            log::info!("[AudioRecorder] No monitor ID, using system default");
+            log::info!("[WindowsRecorder] No monitor ID, using system default");
             resolve_auto_fallback(enumerator)
         }
         DeviceSelection::ByName(name) => {
@@ -977,7 +978,7 @@ unsafe fn resolve_device(
             }
 
             log::warn!(
-                "[AudioRecorder] Configured microphone '{}' not found, falling back to system default",
+                "[WindowsRecorder] Configured microphone '{}' not found, falling back to system default",
                 name
             );
             resolve_auto_fallback(enumerator)
@@ -1154,30 +1155,29 @@ unsafe fn get_form_factor(
     }
 }
 
-impl dictto_core::platform::Recorder for AudioRecorder {
+impl dictto_core::platform::Recorder for WindowsRecorder {
     fn set_app_handle(&mut self, app: tauri::AppHandle) {
-        AudioRecorder::set_app_handle(self, app)
+        WindowsRecorder::set_app_handle(self, app)
     }
     fn start(&mut self, device: DeviceSelection) -> Result<(), AudioError> {
-        AudioRecorder::start(self, device)
+        WindowsRecorder::start(self, device)
     }
     fn stop(&mut self) -> Result<Vec<u8>, AudioError> {
-        AudioRecorder::stop(self)
+        WindowsRecorder::stop(self)
     }
     fn cancel(&mut self) {
         if self.is_recording() {
-            let _ = AudioRecorder::stop(self);
+            let _ = WindowsRecorder::stop(self);
         }
     }
     fn is_recording(&self) -> bool {
-        AudioRecorder::is_recording(self)
+        WindowsRecorder::is_recording(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::audio::device_monitor::DeviceSelection;
 
     #[test]
     fn only_directly_read_known_pcm_and_float_layouts() {
@@ -1206,13 +1206,12 @@ mod tests {
         }
     }
 
-    #[cfg(not(feature = "tauri-host"))]
     #[test]
     #[ignore = "plays a short tone on the default Windows output"]
     fn captures_playback_with_silent_gap() {
         use windows::core::PCWSTR;
         use windows::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_SYNC};
-        let mut recorder = AudioRecorder::new();
+        let mut recorder = WindowsRecorder::new();
         recorder.start(DeviceSelection::PlaybackLoopback).unwrap();
         let frames = (0..SAMPLE_RATE / 3).map(|i| {
             (2000.0 * (i as f32 * 440.0 * std::f32::consts::TAU / SAMPLE_RATE as f32).sin()) as i16
@@ -1255,5 +1254,14 @@ mod tests {
     fn test_device_identity_by_name_empty() {
         let sel = DeviceSelection::ByName("".to_string());
         assert_eq!(device_identity(&sel), Some("".to_string()));
+    }
+}
+
+/// Enumerates capture endpoints through WASAPI.
+pub struct WindowsDevices;
+
+impl dictto_core::platform::Devices for WindowsDevices {
+    fn list_microphones(&self) -> Result<Vec<MicrophoneInfo>, AudioError> {
+        list_microphones()
     }
 }

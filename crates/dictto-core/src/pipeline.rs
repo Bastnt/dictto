@@ -2,7 +2,6 @@ use crate::host::{AppHandle, Manager};
 use std::time::Instant;
 
 use super::db::keystore;
-use super::platform::TextInjector;
 use super::llm::openai_gpt::OpenAIGPT;
 use super::llm::{LLMProcessor, ProcessingContext};
 use super::transcription::openai_api::OpenAIWhisper;
@@ -42,10 +41,22 @@ pub fn retryable_audio(recording: RecordedAudio, result: &Result<(), PipelineErr
     }
 }
 
-pub async fn run_pipeline(
+pub async fn run_pipeline(app: &AppHandle, recording: &RecordedAudio) -> Result<(), PipelineError> {
+    // Retrieving the key first keeps a missing key from costing a settings read.
+    let t = Instant::now();
+    let api_key = keystore::get_api_key().map_err(|e| {
+        log::error!("API key retrieval failed: {}", e);
+        PipelineError::NoApiKey
+    })?;
+    log::info!("[pipeline] API key retrieved in {:?}", t.elapsed());
+    run_pipeline_with_key(app, recording, api_key).await
+}
+
+/// Separate from `run_pipeline` so tests can run it without touching the OS credential store.
+pub async fn run_pipeline_with_key(
     app: &AppHandle,
     recording: &RecordedAudio,
-    injector: &dyn TextInjector,
+    api_key: String,
 ) -> Result<(), PipelineError> {
     let pipeline_start = Instant::now();
     let audio_data = &recording.data;
@@ -56,17 +67,9 @@ pub async fn run_pipeline(
         audio_size_kb, pipeline_start.duration_since(released_at)
     );
 
-    // 1. Get API key
+    // 1. Get settings + shared HTTP client
     let t = Instant::now();
-    let api_key = keystore::get_api_key().map_err(|e| {
-        log::error!("API key retrieval failed: {}", e);
-        PipelineError::NoApiKey
-    })?;
-    log::info!("[pipeline] API key retrieved in {:?}", t.elapsed());
-
-    // 2. Get settings + shared HTTP client
-    let t = Instant::now();
-    let (languages, paste_delay_ms, llm_model, http_client, base_url, transcription_model, cleanup_enabled) = {
+    let (languages, paste_delay_ms, llm_model, http_client, base_url, transcription_model, cleanup_enabled, injector) = {
         let state = app.state::<crate::CoreState>();
         let db = state.db.lock().unwrap();
 
@@ -95,7 +98,7 @@ pub async fn run_pipeline(
             .unwrap_or_else(|| "gpt-4o-mini-transcribe".to_string());
         let client = state.http_client.clone();
         let cleanup_enabled = db.get_setting("cleanup_enabled").as_deref() != Some("false");
-        (languages, paste_delay, model, client, base_url, transcription_model, cleanup_enabled)
+        (languages, paste_delay, model, client, base_url, transcription_model, cleanup_enabled, state.platform.injector.clone())
     };
     log::info!(
         "[pipeline] Settings loaded in {:?} (languages={:?}, model={})",
@@ -104,7 +107,7 @@ pub async fn run_pipeline(
         llm_model
     );
 
-    // 3. Transcribe audio
+    // 2. Transcribe audio
     let t = Instant::now();
     let whisper = OpenAIWhisper::with_client(api_key.clone(), http_client.clone(), base_url.clone(), transcription_model);
     let config = TranscriptionConfig::from_languages(&languages);
@@ -129,7 +132,7 @@ pub async fn run_pipeline(
         return Ok(());
     }
 
-    // 4. Clean with LLM (fallback to raw text on failure)
+    // 3. Clean with LLM (fallback to raw text on failure)
     let t = Instant::now();
     let gpt = OpenAIGPT::with_client(api_key, llm_model, http_client, base_url);
     let context = ProcessingContext {
@@ -139,7 +142,7 @@ pub async fn run_pipeline(
     let cleaned_text = cleanup_transcript(&raw_text, cleanup_enabled, &gpt, &context).await;
     log::info!("[pipeline] Cleanup stage completed in {:?} (enabled={})", t.elapsed(), cleanup_enabled);
 
-    // 5. Inject text
+    // 4. Inject text
     let t = Instant::now();
     let pasted_at = injector.inject(&cleaned_text, paste_delay_ms)
         .await
@@ -148,7 +151,7 @@ pub async fn run_pipeline(
     log::info!("[pipeline] Release to Ctrl+V: {:?}; clipboard restoration: {:?}",
         pasted_at.duration_since(released_at), pasted_at.elapsed());
 
-    // 6. Save to history
+    // 5. Save to history
     let t = Instant::now();
     {
         let state = app.state::<crate::CoreState>();

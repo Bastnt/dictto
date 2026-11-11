@@ -11,7 +11,7 @@ extern crate windows_core;
 
 static PLAYBACK_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-pub(super) fn playback_generation() -> u64 {
+pub(crate) fn playback_generation() -> u64 {
     PLAYBACK_GENERATION.load(Ordering::Acquire)
 }
 
@@ -234,7 +234,7 @@ fn read_initial_default(enumerator: &IMMDeviceEnumerator) -> (Option<String>, St
 /// Spawn the device monitor thread. Returns an mpsc::Sender<()> for shutdown signaling.
 /// Caller stores this in AppState. Sending `()` or dropping the sender signals shutdown.
 #[cfg(windows)]
-pub fn spawn_monitor(
+pub fn spawn(
     state: Arc<DeviceMonitorState>,
     app_handle: tauri::AppHandle,
 ) -> std::sync::mpsc::Sender<()> {

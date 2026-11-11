@@ -7,4 +7,20 @@ description = "Windows platform services shared by the Dictto apps"
 [dependencies]
 dictto-core = { path = "../dictto-core" }
 keyring = { version = "3", features = ["windows-native"] }
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows-core = "0.62"
+windows = { version = "0.62", features = [
+  "Win32_Foundation", "Win32_UI_WindowsAndMessaging",
+  "Win32_Media_Audio", "Win32_System_Com", "Win32_System_Com_StructuredStorage",
+  "Win32_Devices_Properties", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Variant",
+  "Win32_Security", "Win32_System_Threading",
+] }
+enigo = "0.6"
+arboard = "3"
+winreg = "0.55"
+tokio = { version = "1", features = ["time"] }
+async-trait = "0.1"
+log = "0.4"
+serde_json = "1"
+
+[dev-dependencies]
+hound = "3.5"
