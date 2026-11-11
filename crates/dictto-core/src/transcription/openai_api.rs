@@ -46,7 +46,7 @@ mod tests {
 
     #[tokio::test]
     async fn warmup_rejects_auto_before_uploading() {
-        let error = crate::services::warmup::send(&reqwest::Client::new(),
+        let error = crate::warmup::send(&reqwest::Client::new(),
             "http://127.0.0.1:1/v1", "canary-1b-v2", "key", None).await.unwrap_err();
         assert!(error.to_string().contains("auto-detection"));
     }
@@ -70,8 +70,8 @@ impl TranscriptionEngine for OpenAIWhisper {
         config: &TranscriptionConfig,
     ) -> Result<TranscriptionResult, TranscriptionError> {
         config.validate(&self.model)?;
-        crate::services::warmup::prioritize_transcription();
-        let mut activity = crate::services::warmup::ACTIVITY.lock().await;
+        crate::warmup::prioritize_transcription();
+        let mut activity = crate::warmup::ACTIVITY.lock().await;
         let mut last_error = TranscriptionError::Timeout;
 
         for attempt in 1..=MAX_ATTEMPTS {

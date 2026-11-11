@@ -1,10 +1,11 @@
 use crate::services::autostart;
-use crate::AppState;
+use dictto_core::CoreState;
+use std::sync::Arc;
 use std::collections::HashMap;
 use tauri::{Emitter, State};
 
 #[tauri::command]
-pub fn get_setting(key: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
+pub fn get_setting(key: String, state: State<'_, Arc<CoreState>>) -> Result<Option<String>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     Ok(db.get_setting(&key))
 }
@@ -14,10 +15,10 @@ pub fn set_setting(
     key: String,
     value: String,
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<CoreState>>,
 ) -> Result<(), String> {
     let hotkey = if key == "hotkey" {
-        Some(crate::services::hotkey::chord::Chord::parse(&value)?)
+        Some(dictto_core::chord::Chord::parse(&value)?)
     } else { None };
     {
         let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -50,29 +51,29 @@ pub fn set_setting(
 }
 
 #[tauri::command]
-pub fn get_all_settings(state: State<'_, AppState>) -> Result<HashMap<String, String>, String> {
+pub fn get_all_settings(state: State<'_, Arc<CoreState>>) -> Result<HashMap<String, String>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.get_all_settings().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn set_api_key(api_key: String) -> Result<(), String> {
-    crate::services::db::keystore::set_api_key(&api_key).map_err(|e| e.to_string())
+    dictto_core::db::keystore::set_api_key(&api_key).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn has_api_key() -> Result<bool, String> {
-    Ok(crate::services::db::keystore::get_api_key().is_ok())
+    Ok(dictto_core::db::keystore::get_api_key().is_ok())
 }
 
 #[tauri::command]
 pub fn remove_api_key() -> Result<(), String> {
-    crate::services::db::keystore::delete_api_key().map_err(|e| e.to_string())
+    dictto_core::db::keystore::delete_api_key().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn get_api_key_hint() -> Result<String, String> {
-    let key = crate::services::db::keystore::get_api_key().map_err(|e| e.to_string())?;
+    let key = dictto_core::db::keystore::get_api_key().map_err(|e| e.to_string())?;
     if key.len() > 3 {
         let last3 = &key[key.len() - 3..];
         Ok(format!("••••••••{}", last3))

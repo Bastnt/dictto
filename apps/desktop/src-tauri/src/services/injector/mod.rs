@@ -2,12 +2,16 @@ pub mod clipboard;
 
 use std::time::{Duration, Instant};
 
-#[derive(Debug, thiserror::Error)]
-pub enum InjectionError {
-    #[error("Clipboard error: {0}")]
-    ClipboardError(String),
-    #[error("Keyboard simulation error: {0}")]
-    KeyboardError(String),
+pub use dictto_core::platform::InjectionError;
+
+/// Pastes through the clipboard and a simulated Ctrl+V.
+pub struct ClipboardInjector;
+
+#[async_trait::async_trait]
+impl dictto_core::platform::TextInjector for ClipboardInjector {
+    async fn inject(&self, text: &str, paste_delay_ms: u64) -> Result<Instant, InjectionError> {
+        inject_text(text, paste_delay_ms).await
+    }
 }
 
 pub async fn inject_text(text: &str, paste_delay_ms: u64) -> Result<Instant, InjectionError> {

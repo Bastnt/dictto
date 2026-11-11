@@ -1,9 +1,8 @@
-use crate::host as tauri;
+use crate::host::{AppHandle, Manager};
 use std::time::Instant;
-use tauri::Manager;
 
 use super::db::keystore;
-use super::injector;
+use super::platform::TextInjector;
 use super::llm::openai_gpt::OpenAIGPT;
 use super::llm::{LLMProcessor, ProcessingContext};
 use super::transcription::openai_api::OpenAIWhisper;
@@ -44,8 +43,9 @@ pub fn retryable_audio(recording: RecordedAudio, result: &Result<(), PipelineErr
 }
 
 pub async fn run_pipeline(
-    app: &tauri::AppHandle,
+    app: &AppHandle,
     recording: &RecordedAudio,
+    injector: &dyn TextInjector,
 ) -> Result<(), PipelineError> {
     let pipeline_start = Instant::now();
     let audio_data = &recording.data;
@@ -67,7 +67,7 @@ pub async fn run_pipeline(
     // 2. Get settings + shared HTTP client
     let t = Instant::now();
     let (languages, paste_delay_ms, llm_model, http_client, base_url, transcription_model, cleanup_enabled) = {
-        let state = app.state::<crate::AppState>();
+        let state = app.state::<crate::CoreState>();
         let db = state.db.lock().unwrap();
 
         // Read languages JSON array from DB (LANG-01)
@@ -141,7 +141,7 @@ pub async fn run_pipeline(
 
     // 5. Inject text
     let t = Instant::now();
-    let pasted_at = injector::inject_text(&cleaned_text, paste_delay_ms)
+    let pasted_at = injector.inject(&cleaned_text, paste_delay_ms)
         .await
         .map_err(|e| PipelineError::InjectionFailed(e.to_string()))?;
     log::info!("[pipeline] Text injection done in {:?}", t.elapsed());
@@ -151,7 +151,7 @@ pub async fn run_pipeline(
     // 6. Save to history
     let t = Instant::now();
     {
-        let state = app.state::<crate::AppState>();
+        let state = app.state::<crate::CoreState>();
         let db = state.db.lock().unwrap();
         if let Err(e) = db.save_history(&raw_text, &cleaned_text, &languages.join(","), None) {
             log::warn!("Failed to save history: {}", e);
@@ -189,7 +189,7 @@ mod tests {
     struct UnexpectedCleanup;
     #[async_trait::async_trait]
     impl super::LLMProcessor for UnexpectedCleanup {
-        async fn process(&self, _: &str, _: &super::ProcessingContext) -> Result<String, crate::services::llm::LLMError> {
+        async fn process(&self, _: &str, _: &super::ProcessingContext) -> Result<String, crate::llm::LLMError> {
             panic!("disabled cleanup must never call the processor");
         }
     }

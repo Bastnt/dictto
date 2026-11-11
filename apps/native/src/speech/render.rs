@@ -1,5 +1,5 @@
 use crate::speech_api::{self, SpeechModel, SpeechRequest};
-use crate::AppState;
+use crate::SpeechState;
 use async_trait::async_trait;
 use ring::digest::{Context, SHA256};
 use std::collections::HashMap;
@@ -136,7 +136,7 @@ impl<'a> Synthesis<'a> {
     }
     async fn chunk(
         &self,
-        state: &AppState,
+        state: &SpeechState,
         base: &str,
         key: &str,
         text: &str,
@@ -153,7 +153,7 @@ impl<'a> Synthesis<'a> {
 }
 
 fn with_cache<T>(
-    state: &AppState,
+    state: &SpeechState,
     op: impl FnOnce(&mut super::cache::Cache) -> io::Result<T>,
 ) -> Result<T, String> {
     let mut slot = state.speech_cache.lock().map_err(|e| e.to_string())?;
@@ -167,7 +167,7 @@ fn with_cache<T>(
 }
 
 pub(super) async fn speak(
-    state: &AppState,
+    state: &SpeechState,
     settings: &HashMap<String, String>,
     key: &str,
     text: &str,
@@ -347,20 +347,22 @@ mod tests {
         data.into_inner()
     }
 
-    fn state(directory: &Path) -> AppState {
+    fn state(directory: &Path) -> SpeechState {
         let dir = directory.join("Speech Audio");
-        AppState {
+        SpeechState {
+            core: Arc::new(dictto_core::CoreState {
+                audio_recorder: Mutex::new(Box::new(
+                    crate::services::audio::recorder::AudioRecorder::new(),
+                )),
+                db: Mutex::new(dictto_core::db::Database::new(directory.into()).unwrap()),
+                http_client: reqwest::Client::new(),
+                device_monitor: Arc::new(dictto_core::audio::DeviceMonitorState::new()),
+                device_monitor_shutdown: Mutex::new(None),
+            }),
             mic_route: Arc::new(super::super::virtual_mic::Manager::new(directory)),
             sample_path: directory.join("voice-sample.wav"),
             speech_cache: Mutex::new(Some(super::super::cache::Cache::new(dir.clone()).unwrap())),
             speech_audio_dir: dir,
-            audio_recorder: Mutex::new(crate::services::audio::recorder::AudioRecorder::new()),
-            db: Mutex::new(crate::services::db::Database::new(directory.into()).unwrap()),
-            http_client: reqwest::Client::new(),
-            device_monitor: Arc::new(
-                crate::services::audio::device_monitor::DeviceMonitorState::new(),
-            ),
-            device_monitor_shutdown: Mutex::new(None),
         }
     }
 

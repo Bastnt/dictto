@@ -122,7 +122,7 @@ impl Database {
     }
 
     fn ensure_speech_shortcuts(&self) -> Result<(), DbError> {
-        use crate::services::hotkey::chord::Chord;
+        use crate::chord::Chord;
 
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)?;
         let settings = self.get_all_settings()?;
@@ -279,6 +279,29 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    fn tempdir_with_fixture(fixture: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dictto-core-fixture-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join(fixture), dir.join("dictto.db")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn opens_database_written_by_previous_layout() {
+        // fixture: copy of a dictto.db produced by the current main build
+        let dir = tempdir_with_fixture("tests/fixtures/legacy-dictto.db");
+        let db = Database::new(dir.clone()).unwrap();
+        assert_eq!(db.get_setting("hotkey").as_deref(), Some("Ctrl+Win"));
+        assert_eq!(db.get_setting("tts_hotkey_read_clone").as_deref(), Some("Ctrl+Shift+F9"));
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn speech_bindings_have_distinct_defaults_and_stay_disabled_after_clearing() {
@@ -293,7 +316,7 @@ mod tests {
 
     #[test]
     fn speech_binding_upgrade_preserves_user_chords_and_avoids_subset_conflicts() {
-        use crate::services::hotkey::chord::Chord;
+        use crate::chord::Chord;
         let db = Database::new_in_memory().unwrap();
         db.conn.execute("DELETE FROM settings WHERE key='speech_shortcuts_initialized_v1'", []).unwrap();
         for (key, _) in settings::SPEECH_SHORTCUTS {

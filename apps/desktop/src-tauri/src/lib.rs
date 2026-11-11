@@ -4,20 +4,14 @@ mod commands;
 mod services;
 mod tray;
 
+use dictto_core::CoreState;
 use log::LevelFilter;
 use std::sync::Arc;
 use std::sync::Mutex;
+use tauri::Emitter;
 use tauri::Manager;
 use tauri::WebviewUrl;
 use tauri::WebviewWindowBuilder;
-
-pub struct AppState {
-    pub audio_recorder: Mutex<services::audio::recorder::AudioRecorder>,
-    pub db: Mutex<services::db::Database>,
-    pub http_client: reqwest::Client,
-    pub device_monitor: Arc<services::audio::device_monitor::DeviceMonitorState>,
-    pub device_monitor_shutdown: Mutex<Option<std::sync::mpsc::Sender<()>>>,
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,6 +19,11 @@ pub fn run() {
         Ok(guard) => guard,
         Err(error) => { eprintln!("{error}"); return; }
     };
+    // Shared services spawn on the core runtime, not on Tauri's.
+    if let Err(error) = dictto_core::host::async_runtime::initialize() {
+        eprintln!("{error}");
+        return;
+    }
     let audio_recorder = services::audio::recorder::AudioRecorder::new();
     let http_client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
@@ -59,41 +58,48 @@ pub fn run() {
             commands::settings::has_api_key,
             commands::settings::remove_api_key,
             commands::settings::get_api_key_hint,
-            services::hotkey::set_hotkey_capture,
+            commands::audio::set_hotkey_capture,
             commands::window::update_pill_hitbox,
             commands::window::clear_pill_hitbox,
         ])
         .setup(move |app| {
             // Initialize database in Tauri's local data directory
             let data_dir = app.path().app_local_data_dir()?;
-            let db = services::db::Database::new(data_dir)
+            let db = dictto_core::db::Database::new(data_dir)
                 .expect("Failed to initialize database");
 
-            // Spawn device monitor thread (Windows only — cfg guard inside spawn_monitor)
-            let device_monitor_state = Arc::new(
-                services::audio::device_monitor::DeviceMonitorState::new()
-            );
-            #[cfg(windows)]
-            let shutdown_tx = services::audio::device_monitor::spawn_monitor(
-                device_monitor_state.clone(),
-                app.handle().clone(),
-            );
-            #[cfg(not(windows))]
-            let shutdown_tx: Option<std::sync::mpsc::Sender<()>> = None;
-            #[cfg(windows)]
-            let shutdown_tx = Some(shutdown_tx);
-
-            app.manage(AppState {
-                audio_recorder: Mutex::new(audio_recorder),
+            let device_monitor_state = Arc::new(dictto_core::audio::DeviceMonitorState::new());
+            let state = Arc::new(CoreState {
+                audio_recorder: Mutex::new(Box::new(audio_recorder)),
                 db: Mutex::new(db),
                 http_client,
-                device_monitor: device_monitor_state,
-                device_monitor_shutdown: Mutex::new(shutdown_tx),
+                device_monitor: device_monitor_state.clone(),
+                device_monitor_shutdown: Mutex::new(None),
             });
+            // Shared services emit through the core handle; forward to the webviews.
+            let tauri_handle = app.handle().clone();
+            let core = dictto_core::host::AppHandle::new(
+                &state,
+                Arc::new(move |event: &str, payload: serde_json::Value| {
+                    let _ = tauri_handle.emit(event, payload);
+                }),
+            );
+
+            // Spawn device monitor thread (Windows only — cfg guard inside spawn_monitor)
+            #[cfg(windows)]
+            {
+                let shutdown_tx = services::audio::device_monitor::spawn_monitor(
+                    device_monitor_state,
+                    core.clone(),
+                );
+                *state.device_monitor_shutdown.lock().unwrap() = Some(shutdown_tx);
+            }
+
+            app.manage(state.clone());
+            app.manage(core.clone());
 
             // Migration: ensure existing auto-start registry entries include --autostart flag
             {
-                let state = app.state::<AppState>();
                 let db = state.db.lock().unwrap();
                 if db.get_setting("auto_start").as_deref() == Some("true") {
                     if let Ok(exe_path) = std::env::current_exe() {
@@ -103,15 +109,11 @@ pub fn run() {
             }
 
             // Inject AppHandle into AudioRecorder for waveform event emission
-            {
-                let state = app.state::<AppState>();
-                let mut recorder = state.audio_recorder.lock().unwrap();
-                recorder.set_app_handle(app.handle().clone());
-            }
+            state.audio_recorder.lock().unwrap().set_app_handle(core.clone());
 
-            services::warmup::schedule(app.handle());
+            dictto_core::warmup::schedule(&core);
             tray::setup_tray(app)?;
-            services::hotkey::register_hotkey(app)?;
+            services::hotkey::register_hotkey(&core)?;
 
             // Create recording bar overlay window
             let monitor = app

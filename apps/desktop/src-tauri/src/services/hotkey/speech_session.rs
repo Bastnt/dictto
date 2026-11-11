@@ -68,7 +68,7 @@ impl SpeechSession {
         let _ = self.task.await;
         if self.recording {
             let result = app
-                .state::<crate::AppState>()
+                .state::<dictto_core::CoreState>()
                 .audio_recorder
                 .lock()
                 .unwrap()

@@ -736,13 +736,10 @@ dependencies = [
  "dictto-windows",
  "enigo",
  "hound",
- "keyring",
  "log",
  "reqwest",
- "rusqlite",
  "serde",
  "serde_json",
- "sys-locale",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",
@@ -759,6 +756,19 @@ dependencies = [
 [[package]]
 name = "dictto-core"
 version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "hound",
+ "keyring",
+ "log",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sys-locale",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "dictto-native"
@@ -770,14 +780,11 @@ dependencies = [
  "dictto-windows",
  "enigo",
  "hound",
- "keyring",
  "log",
  "reqwest",
  "ring",
- "rusqlite",
  "serde",
  "serde_json",
- "sys-locale",
  "thiserror 2.0.18",
  "tokio",
  "windows 0.62.2",
@@ -791,6 +798,7 @@ name = "dictto-windows"
 version = "0.2.0"
 dependencies = [
  "dictto-core",
+ "keyring",
 ]
 
 [[package]]

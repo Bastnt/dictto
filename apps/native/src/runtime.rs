@@ -1,5 +1,6 @@
 use crate::host::{AppHandle, Emitter};
-use crate::{services, AppState, MicrophoneInfo};
+use crate::{services, MicrophoneInfo, SpeechState};
+use dictto_core::CoreState;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,7 +11,7 @@ pub struct NativeRuntime {
     inner: Arc<RuntimeState>,
 }
 struct RuntimeState {
-    state: Arc<AppState>,
+    state: Arc<SpeechState>,
     app: AppHandle,
     started: AtomicBool,
 }
@@ -25,21 +26,26 @@ impl NativeRuntime {
         let speech_cache = crate::speech::cache::Cache::new(speech_audio_dir.clone())
             .map_err(|e| log::warn!("Could not open speech audio folder: {e}"))
             .ok();
-        let state = Arc::new(AppState {
-            mic_route: Arc::new(crate::speech::virtual_mic::Manager::new(&data_dir)),
-            speech_cache: Mutex::new(speech_cache),
-            speech_audio_dir,
-            sample_path: data_dir.join("voice-sample.wav"),
-            audio_recorder: Mutex::new(services::audio::recorder::AudioRecorder::new()),
-            db: Mutex::new(services::db::Database::new(data_dir).map_err(|e| e.to_string())?),
+        let mic_route = Arc::new(crate::speech::virtual_mic::Manager::new(&data_dir));
+        let sample_path = data_dir.join("voice-sample.wav");
+        let core = Arc::new(CoreState {
+            audio_recorder: Mutex::new(Box::new(services::audio::recorder::AudioRecorder::new())),
+            db: Mutex::new(dictto_core::db::Database::new(data_dir).map_err(|e| e.to_string())?),
             http_client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()
                 .map_err(|e| e.to_string())?,
-            device_monitor: Arc::new(services::audio::device_monitor::DeviceMonitorState::new()),
+            device_monitor: Arc::new(dictto_core::audio::DeviceMonitorState::new()),
             device_monitor_shutdown: Mutex::new(None),
         });
-        let app = AppHandle::new(&state, Arc::new(sink));
+        let state = Arc::new(SpeechState {
+            core,
+            mic_route,
+            speech_cache: Mutex::new(speech_cache),
+            speech_audio_dir,
+            sample_path,
+        });
+        let app = AppHandle::new(&state.core, Arc::new(sink)).with_state(&state);
         state
             .audio_recorder
             .lock()
@@ -89,7 +95,7 @@ impl NativeRuntime {
                 .lock()
                 .map_err(|e| e.to_string())? = Some(tx);
         }
-        services::warmup::schedule(&self.inner.app);
+        dictto_core::warmup::schedule(&self.inner.app);
         Ok(())
     }
     pub fn speech_audio_dir(&self) -> PathBuf {
@@ -106,7 +112,7 @@ impl NativeRuntime {
     }
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
         let chord = if key == "hotkey" {
-            Some(services::hotkey::chord::Chord::parse(value)?)
+            Some(dictto_core::chord::Chord::parse(value)?)
         } else {
             None
         };
@@ -158,7 +164,7 @@ impl NativeRuntime {
                 let base = settings
                     .get("api_base_url")
                     .ok_or("Set an API base URL first")?;
-                let key = services::db::keystore::get_api_key()?;
+                let key = dictto_core::db::keystore::get_api_key()?;
                 crate::speech_api::discover(&runtime.inner.state.http_client, base, &key).await
             }
             .await;
@@ -170,10 +176,10 @@ impl NativeRuntime {
         });
     }
     pub fn has_key(&self) -> bool {
-        services::db::keystore::get_api_key().is_ok()
+        dictto_core::db::keystore::get_api_key().is_ok()
     }
     pub fn key_hint(&self) -> Result<String, String> {
-        let key = services::db::keystore::get_api_key()?;
+        let key = dictto_core::db::keystore::get_api_key()?;
         let suffix: String = key
             .chars()
             .rev()
@@ -189,10 +195,10 @@ impl NativeRuntime {
         })
     }
     pub fn save_key(&self, value: &str) -> Result<(), String> {
-        services::db::keystore::set_api_key(value)
+        dictto_core::db::keystore::set_api_key(value)
     }
     pub fn remove_key(&self) -> Result<(), String> {
-        services::db::keystore::delete_api_key()
+        dictto_core::db::keystore::delete_api_key()
     }
     pub fn microphones(&self) -> Result<Vec<MicrophoneInfo>, String> {
         services::audio::recorder::list_microphones().map_err(|e| e.to_string())
@@ -232,7 +238,7 @@ impl NativeRuntime {
         if let Ok(mut recorder) = self.inner.state.audio_recorder.lock() {
             let mut replacement = services::audio::recorder::AudioRecorder::new();
             replacement.set_app_handle(self.inner.app.clone());
-            let retired = std::mem::replace(&mut *recorder, replacement);
+            let retired = std::mem::replace(&mut *recorder, Box::new(replacement));
             drop(recorder);
             drop(retired);
         }
@@ -280,7 +286,7 @@ mod tests {
             );
         }
         {
-            let db = services::db::Database::new(path.clone()).unwrap();
+            let db = dictto_core::db::Database::new(path.clone()).unwrap();
             assert_eq!(db.get_setting("cleanup_enabled").as_deref(), Some("false"));
         }
         std::fs::remove_dir_all(path).unwrap();

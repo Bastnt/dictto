@@ -1,4 +1,4 @@
-use crate::host as tauri;
+use dictto_core::host as tauri;
 use tauri::Manager;
 use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 use windows::core::PCWSTR;
@@ -19,7 +19,7 @@ static STOP_WAV: &[u8] = include_bytes!("../../../assets/sounds/stop.wav");
 /// Static include_bytes! data never gets freed, so SND_MEMORY|SND_ASYNC is safe.
 pub fn play_sound(sound: Sound, app: &tauri::AppHandle) {
     let enabled = {
-        let state = app.state::<crate::AppState>();
+        let state = app.state::<dictto_core::CoreState>();
         let db = state.db.lock().unwrap();
         db.get_setting("sound_effects_enabled")
             .map(|v| v == "true")

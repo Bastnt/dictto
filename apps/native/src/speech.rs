@@ -1,10 +1,10 @@
 use crate::host::{AppHandle, Manager};
-use crate::services::audio::device_monitor::DeviceSelection;
-use crate::services::hotkey::chord::{Chord, Tracker};
-use crate::services::transcription::{
+use dictto_core::audio::DeviceSelection;
+use dictto_core::chord::{Chord, Tracker};
+use dictto_core::transcription::{
     openai_api::OpenAIWhisper, TranscriptionConfig, TranscriptionEngine,
 };
-use crate::AppState;
+use crate::SpeechState;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -128,7 +128,7 @@ impl Action {
         matches!(self, Self::SampleMic | Self::SamplePlayback)
     }
     pub(crate) fn start(self, app: &AppHandle) -> Result<Duration, String> {
-        let state = app.state::<AppState>();
+        let state = app.state::<SpeechState>();
         if self == Self::Repeat && !state.sample_path.is_file() {
             return Err("Record a clone sample first.".into());
         }
@@ -163,7 +163,7 @@ impl Action {
     }
 
     pub(crate) async fn run(self, app: AppHandle, audio: Option<Vec<u8>>) -> Result<(), String> {
-        let state = app.state::<AppState>();
+        let state = app.state::<SpeechState>();
         if self.sample() {
             let wav = audio.ok_or("No recorded sample")?;
             return replace_sample(&state.sample_path, &wav);
@@ -184,7 +184,7 @@ impl Action {
         if use_virtual_mic {
             state.mic_route.check_available()?;
         }
-        let key = crate::services::db::keystore::get_api_key()
+        let key = dictto_core::db::keystore::get_api_key()
             .map_err(|_| "Set your fleet API key in Settings.")?;
         let base = get("api_base_url");
         let languages: Vec<String> = serde_json::from_str(get("languages")).unwrap_or_default();
@@ -199,7 +199,7 @@ impl Action {
             whisper
                 .transcribe(&audio.ok_or("No recorded speech")?, &config)
                 .await
-                .map_err(|e| crate::services::transcription::friendly_error(&e.to_string()))?
+                .map_err(|e| dictto_core::transcription::friendly_error(&e.to_string()))?
                 .text
         } else {
             tokio::task::spawn_blocking(selection_or_clipboard)

@@ -1,62 +1,18 @@
-use crate::host as tauri;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use dictto_core::host as tauri;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tauri::Emitter;
+
+pub use dictto_core::audio::{DeviceMonitorState, DeviceSelection};
 
 // Required for the #[implement] proc macro to resolve ::windows_core crate name
 #[cfg(windows)]
 extern crate windows_core;
 
-/// Shared state between the device monitor thread and the rest of the app.
-/// Fields are overwritten on each callback — never accumulated.
-pub struct DeviceMonitorState {
-    /// The endpoint ID of the last activated/default capture device.
-    pub last_device_id: Mutex<Option<String>>,
-    /// The friendly name of that device (for UI display).
-    pub last_device_name: Mutex<String>,
-    /// Flag set to true when any device change occurs. Frontend checks + clears.
-    pub devices_changed: AtomicBool,
-}
-
-impl DeviceMonitorState {
-    pub fn new() -> Self {
-        Self {
-            last_device_id: Mutex::new(None),
-            last_device_name: Mutex::new(String::new()),
-            devices_changed: AtomicBool::new(false),
-        }
-    }
-
-    /// Read the current auto-detect device ID.
-    pub fn get_device_id(&self) -> Option<String> {
-        self.last_device_id.lock().unwrap().clone()
-    }
-
-    /// Read the current auto-detect device friendly name.
-    pub fn get_device_name(&self) -> String {
-        self.last_device_name.lock().unwrap().clone()
-    }
-
-    /// Check and clear the devices_changed flag.
-    pub fn take_devices_changed(&self) -> bool {
-        self.devices_changed.swap(false, Ordering::AcqRel)
-    }
-}
-
 static PLAYBACK_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn playback_generation() -> u64 {
     PLAYBACK_GENERATION.load(Ordering::Acquire)
-}
-
-/// How the capture thread should resolve which device to use.
-#[derive(Clone, Debug)]
-pub enum DeviceSelection {
-    PlaybackLoopback,
-    /// Use the device tracked by the monitor (or fallback to system default).
-    AutoDetect(Option<String>), // Option<endpoint_id>
-    /// Use a specific device matched by friendly name.
-    ByName(String),
 }
 
 // ─── Windows-specific implementation ─────────────────────────────────────────

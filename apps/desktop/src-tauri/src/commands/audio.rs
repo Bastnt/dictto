@@ -8,7 +8,7 @@ pub fn list_microphones() -> Result<Vec<MicrophoneInfo>, String> {
 /// Returns the friendly name of the device the monitor currently tracks.
 /// Used by the frontend to display "Auto-detect (Device Name)".
 #[tauri::command]
-pub fn get_current_microphone(state: tauri::State<'_, crate::AppState>) -> String {
+pub fn get_current_microphone(state: tauri::State<'_, std::sync::Arc<dictto_core::CoreState>>) -> String {
     state.device_monitor.get_device_name()
 }
 
@@ -28,4 +28,9 @@ pub fn bar_stop_recording() {
 #[tauri::command]
 pub fn bar_cancel_recording() {
     crate::services::hotkey::send_bar_cancel();
+}
+
+#[tauri::command]
+pub fn set_hotkey_capture(active: bool) {
+    crate::services::hotkey::set_hotkey_capture(active);
 }

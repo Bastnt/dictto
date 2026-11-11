@@ -714,7 +714,7 @@ impl App {
                 name.as_str(),
                 "error" | "recording-error" | "dictation-error"
             ) {
-                self.status = dictto_native::services::transcription::friendly_error(
+                self.status = dictto_core::transcription::friendly_error(
                     payload["message"].as_str().unwrap_or_default()).into();
             } else if matches!(
                 name.as_str(),

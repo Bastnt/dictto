@@ -167,7 +167,7 @@ impl State {
                 self.recording = false;
                 self.processing = false;
                 self.continuous = false;
-                self.error = dictto_native::services::transcription::friendly_error(
+                self.error = dictto_core::transcription::friendly_error(
                     value["message"].as_str().unwrap_or_default()).into()
             }
             _ => {}

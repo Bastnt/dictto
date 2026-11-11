@@ -1,11 +1,11 @@
-use crate::host as tauri;
+use dictto_core::host as tauri;
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::Emitter;
 use tauri::Manager;
 use crate::services::audio::device_monitor::DeviceSelection;
 use crate::services::sound::{play_sound, Sound};
-use crate::services::pipeline::RecordedAudio;
-pub mod chord;
+use dictto_core::pipeline::RecordedAudio;
+pub use dictto_core::chord;
 #[cfg(not(feature = "tauri-host"))]
 mod speech_session;
 #[cfg(not(feature = "tauri-host"))]
@@ -28,7 +28,6 @@ pub fn configure(value: chord::Chord) {
     tracker.chord = value;
 }
 
-#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn set_hotkey_capture(active: bool) {
     #[cfg(not(feature = "tauri-host"))]
     crate::speech::suspend(active);
@@ -137,7 +136,7 @@ fn emit_state(app: &tauri::AppHandle, state: &str, mode: Option<&str>) {
 fn stop_recording_sync(app: &tauri::AppHandle) -> Option<RecordedAudio> {
     let t = std::time::Instant::now();
     log::debug!("[hotkey] stop_recording_sync: acquiring recorder lock...");
-    let app_state = app.state::<crate::AppState>();
+    let app_state = app.state::<dictto_core::CoreState>();
     let mut recorder = app_state.audio_recorder.lock().unwrap();
     log::debug!("[hotkey] stop_recording_sync: calling recorder.stop()...");
     let result = match recorder.stop() {
@@ -149,7 +148,7 @@ fn stop_recording_sync(app: &tauri::AppHandle) -> Option<RecordedAudio> {
             );
             Some(RecordedAudio { data, released_at: t })
         }
-        Err(crate::services::audio::recorder::AudioError::EmptyRecording) => {
+        Err(dictto_core::audio::AudioError::EmptyRecording) => {
             log::debug!("[hotkey] stop_recording_sync: empty recording (too short or silent)");
             None
         }
@@ -203,7 +202,7 @@ fn enqueue_pipeline(
 
 /// Cancel recording: stop the audio stream and discard everything.
 fn cancel_recording(app: &tauri::AppHandle) {
-    let app_state = app.state::<crate::AppState>();
+    let app_state = app.state::<dictto_core::CoreState>();
     let mut recorder = app_state.audio_recorder.lock().unwrap();
     if recorder.is_recording() {
         // stop() returns audio data, but we discard it
@@ -216,12 +215,12 @@ fn cancel_recording(app: &tauri::AppHandle) {
 /// Start audio recording with the configured device.
 /// Returns the recording limit in seconds, or None on failure.
 fn start_recording(app: &tauri::AppHandle, preload: bool, pending: usize) -> Option<u64> {
-    let app_state = app.state::<crate::AppState>();
+    let app_state = app.state::<dictto_core::CoreState>();
 
     let validation = {
         let db = app_state.db.lock().unwrap();
         let languages: Vec<String> = serde_json::from_str(&db.get_setting("languages").unwrap_or_default()).unwrap_or_default();
-        super::transcription::TranscriptionConfig::from_languages(&languages)
+        dictto_core::transcription::TranscriptionConfig::from_languages(&languages)
             .validate(&db.get_setting("transcription_model").unwrap_or_default())
     };
     if let Err(error) = validation {
@@ -268,7 +267,7 @@ fn start_recording(app: &tauri::AppHandle, preload: bool, pending: usize) -> Opt
     }
     drop(recorder); // explicit drop to release mutex before play_sound acquires db mutex
 
-    if preload { crate::services::warmup::schedule(app); }
+    if preload { dictto_core::warmup::schedule(app); }
     play_sound(Sound::Start, app);
     Some(limit_secs)
 }
@@ -279,7 +278,7 @@ const TAP_MAX_DURATION: std::time::Duration = std::time::Duration::from_millis(2
 const DOUBLE_TAP_WINDOW: std::time::Duration = std::time::Duration::from_millis(300);
 
 pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let state = app.state::<crate::AppState>();
+    let state = app.state::<dictto_core::CoreState>();
     #[cfg(not(feature = "tauri-host"))]
     crate::speech::configure(crate::speech::parse_bindings(&state.db.lock().unwrap().get_all_settings()?, false)?);
     let value = state.db.lock().unwrap().get_setting("hotkey").unwrap_or_else(|| "Ctrl+Win".into());
@@ -341,7 +340,7 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
         let pipeline_app = app_handle.clone();
         tauri::async_runtime::spawn(async move {
             while let Some(audio) = pipeline_rx.recv().await {
-                let result = crate::services::pipeline::run_pipeline(&pipeline_app, &audio).await;
+                let result = dictto_core::pipeline::run_pipeline(&pipeline_app, &audio, &crate::services::injector::ClipboardInjector).await;
                 match &result {
                     Ok(()) => {}
                     Err(error) => {
@@ -352,7 +351,7 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
                         );
                     }
                 }
-                let _ = completed_tx.send(crate::services::pipeline::retryable_audio(audio, &result));
+                let _ = completed_tx.send(dictto_core::pipeline::retryable_audio(audio, &result));
             }
         });
         let mut pending_pipelines = 0usize;

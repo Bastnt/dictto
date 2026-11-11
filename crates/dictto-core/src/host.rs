@@ -1,4 +1,4 @@
-use crate::AppState;
+use crate::CoreState;
 use std::any::Any;
 use std::sync::{Arc, Weak};
 
@@ -6,18 +6,22 @@ pub type EventSink = dyn Fn(&str, serde_json::Value) + Send + Sync;
 
 #[derive(Clone)]
 pub struct AppHandle {
-    state: Weak<AppState>,
+    // Weak so that state holding a handle (the recorder) does not keep itself alive.
+    states: Vec<Weak<dyn Any + Send + Sync>>,
     sink: Arc<EventSink>,
 }
 
 pub type App = AppHandle;
 
 impl AppHandle {
-    pub fn new(state: &Arc<AppState>, sink: Arc<EventSink>) -> Self {
-        Self {
-            state: Arc::downgrade(state),
-            sink,
-        }
+    pub fn new(state: &Arc<CoreState>, sink: Arc<EventSink>) -> Self {
+        Self { states: Vec::new(), sink }.with_state(state)
+    }
+    /// Registers app-owned state that `Manager::state` resolves next to `CoreState`.
+    pub fn with_state<T: Any + Send + Sync>(mut self, state: &Arc<T>) -> Self {
+        let state: Arc<dyn Any + Send + Sync> = state.clone();
+        self.states.push(Arc::downgrade(&state));
+        self
     }
     pub fn handle(&self) -> &Self {
         self
@@ -29,13 +33,10 @@ pub trait Manager {
 }
 impl Manager for AppHandle {
     fn state<T: Any + Send + Sync>(&self) -> Arc<T> {
-        let state: Arc<dyn Any + Send + Sync> = self
-            .state
-            .upgrade()
-            .expect("native application state is alive");
-        state
-            .downcast()
-            .unwrap_or_else(|_| panic!("unsupported native application state"))
+        self.states
+            .iter()
+            .find_map(|state| state.upgrade()?.downcast().ok())
+            .unwrap_or_else(|| panic!("unsupported native application state"))
     }
 }
 
