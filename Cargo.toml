@@ -6,6 +6,8 @@ members = [
   "apps/native",
   "apps/desktop/src-tauri",
 ]
+# The other members build on Windows only; a plain `cargo build` stays portable.
+default-members = ["crates/dictto-core"]
 
 # Without this, partitioning noise in the core alone pushed the native exe past its size budget.
 [profile.release.package.dictto-core]

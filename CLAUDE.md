@@ -8,9 +8,12 @@ This file provides guidance to Claude Code when working with code in this reposi
 pnpm dev              # Start Tauri dev mode (frontend + backend hot-reload)
 pnpm build            # Production build
 
-# Rust-only checks (workspace root):
-cargo check --workspace
+# Rust-only checks (workspace root). A bare `cargo build`/`cargo test` covers only
+# dictto-core (default-members); name the scope explicitly:
+cargo check --workspace                 # everything (Windows)
 cargo test --workspace
+cargo test -p dictto-core --all-features  # the shared core, on any OS
+cargo build --release -p dictto-native    # one app (-p dictto for Tauri)
 ```
 
 ## Architecture

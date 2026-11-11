@@ -77,15 +77,15 @@ saved alongside these files.
 
 ### Send speech to Discord
 
-Install the Dictto Microphone capture driver and select **Default** as the input
-in Discord. Leave your normal microphone selected as the Windows default
-communications input. Enable **Speech → Send speech to Dictto Microphone** in
-Dictto. The existing speech shortcuts then send generated or cached speech to
+Install VB-CABLE, enable both cable endpoints in Windows Sound and select
+**Default** as the input in Discord. Leave your normal microphone selected as the
+Windows default communications input. Enable **Speech → Send speech to VB-CABLE**
+in Dictto. The existing speech shortcuts then send generated or cached speech to
 that input. Turning the checkbox off returns speech to local playback.
 
 Dictto changes only the communications capture role, once synthesized audio is
-ready. It waits up to eight seconds for an app to open the virtual input before
-sending the first sample. When speech drains, is cancelled, or the desktop
+ready. It then waits 400 ms for communications apps to reopen capture before
+playing to the cable. When speech drains, is cancelled, or the desktop
 locks or disconnects, Dictto restores the previous input if its own endpoint
 is still selected. A manual input change takes precedence. The previous
 endpoint ID is journaled for recovery after an interrupted exit. If the driver
