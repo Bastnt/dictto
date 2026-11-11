@@ -1,5 +1,10 @@
 //! Native Dictto for Fedora GNOME. Linux-only modules are gated so the workspace builds on Windows.
 
+#[cfg(target_os = "linux")]
+pub mod keyboard;
+#[cfg(target_os = "linux")]
+pub mod session;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Daemon,

@@ -12,3 +12,9 @@ log = "0.4"
 # Same major as dictto-core; without a Secret Service backend keyring falls back to a
 # mock store and saved API keys vanish on exit.
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+evdev = { version = "0.13", features = ["tokio"] }
+inotify = { version = "0.11", default-features = false }
+tokio = { version = "1", features = ["net", "macros"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+futures-util = { version = "0.3", default-features = false }
+thiserror = "2"
