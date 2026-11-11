@@ -4,6 +4,7 @@ members = [
   "crates/dictto-core",
   "crates/dictto-windows",
   "apps/native",
+  "apps/gnome",
   "apps/desktop/src-tauri",
 ]
 # The other members build on Windows only; a plain `cargo build` stays portable.

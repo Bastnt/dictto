@@ -100,3 +100,17 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("yi", "Yiddish"),
     ("yo", "Yoruba"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::LANGUAGES;
+
+    #[test]
+    fn language_codes_are_unique_and_english_leads() {
+        assert_eq!(LANGUAGES[0].0, "en");
+        let mut codes: Vec<_> = LANGUAGES.iter().map(|l| l.0).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), LANGUAGES.len());
+    }
+}

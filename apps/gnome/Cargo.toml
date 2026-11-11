@@ -1,0 +1,14 @@
+[package]
+name = "dictto-gnome"
+version = "0.2.0"
+edition = "2021"
+description = "Native Dictto for Fedora GNOME (Wayland)"
+
+[dependencies]
+dictto-core = { path = "../../crates/dictto-core", features = ["speech"] }
+log = "0.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Same major as dictto-core; without a Secret Service backend keyring falls back to a
+# mock store and saved API keys vanish on exit.
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }

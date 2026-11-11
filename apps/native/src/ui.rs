@@ -18,8 +18,7 @@ use windows::{
         UI::{Controls::*, HiDpi::*, Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
     },
 };
-#[path = "ui_models.rs"]
-mod models;
+use dictto_core::settings_model as models;
 #[path = "ui_speech.rs"]
 mod speech;
 use dictto_native::speech_api::SpeechModel;

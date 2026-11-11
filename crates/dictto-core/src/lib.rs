@@ -8,6 +8,7 @@ pub mod host;
 pub mod llm;
 pub mod pipeline;
 pub mod platform;
+pub mod settings_model;
 mod runtime;
 #[cfg(feature = "speech")]
 pub mod speech;
