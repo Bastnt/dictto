@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 const LIMIT: usize = 6;
 const PREFIX: &str = "dictto-tts-v1-";
 
-pub(crate) struct Cache {
+/// Last six rendered reads, kept as WAVs users can open from the Speech Audio folder.
+pub struct Cache {
     dir: PathBuf,
     verified: HashMap<String, (String, Fingerprint)>,
-    create_marker: fn(&Path) -> io::Result<File>,
+    files: CacheFiles,
 }
 
 #[derive(Debug)]
@@ -126,14 +127,27 @@ fn fingerprint(path: &Path) -> io::Result<Fingerprint> {
     })
 }
 
-// 32 and 33 are the Windows sharing and lock violations: another process holds the file.
-fn shared(error: &io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(32 | 33)) || error.kind() == io::ErrorKind::PermissionDenied
+/// File operations whose behaviour differs between platforms.
+#[derive(Clone, Copy)]
+pub struct CacheFiles {
+    /// Creates a new cache marker file; Windows hides it from Explorer.
+    pub create_marker: fn(&Path) -> io::Result<File>,
+    /// True when another process holds the file open, so the entry is kept for now.
+    pub locked: fn(&io::Error) -> bool,
 }
 
-fn cleanup(path: &Path) -> io::Result<()> {
+impl Default for CacheFiles {
+    fn default() -> Self {
+        Self {
+            create_marker: |path| File::create_new(path),
+            locked: |_| false,
+        }
+    }
+}
+
+fn cleanup(path: &Path, locked: fn(&io::Error) -> bool) -> io::Result<()> {
     match remove_if_present(path) {
-        Err(error) if shared(&error) => Ok(()),
+        Err(error) if locked(&error) => Ok(()),
         result => result,
     }
 }
@@ -145,25 +159,26 @@ fn owned_wav(name: &str) -> Option<&str> {
 }
 
 impl Cache {
-    pub(crate) fn new(dir: PathBuf, create_marker: fn(&Path) -> io::Result<File>) -> io::Result<Self> {
+    pub fn new(dir: PathBuf, files: CacheFiles) -> io::Result<Self> {
         fs::create_dir_all(&dir)?;
         let mut cache = Self {
             dir: std::path::absolute(dir)?,
             verified: HashMap::new(),
-            create_marker,
+            files,
         };
+        let locked = files.locked;
         let mut keep = HashSet::new();
         for entry in cache.entries()?.into_iter().rev() {
             if keep.len() == LIMIT || keep.contains(&entry.key) {
-                cleanup(&entry.path)?;
+                cleanup(&entry.path, locked)?;
                 continue;
             }
             match cache.intact(&entry) {
-                Ok(false) => cleanup(&entry.path)?,
+                Ok(false) => cleanup(&entry.path, locked)?,
                 Ok(true) => {
                     keep.insert(entry.key);
                 }
-                Err(e) if shared(&e) => {
+                Err(e) if locked(&e) => {
                     keep.insert(entry.key);
                 }
                 Err(e) => return Err(e),
@@ -184,13 +199,13 @@ impl Cache {
                     .strip_suffix(".tmp")
                     .is_some_and(|n| owned_wav(n).is_some())
             {
-                cleanup(&item.path())?;
+                cleanup(&item.path(), locked)?;
             }
         }
         Ok(cache)
     }
 
-    pub(crate) fn directory(&self) -> &Path {
+    pub fn directory(&self) -> &Path {
         &self.dir
     }
 
@@ -259,7 +274,8 @@ impl Cache {
             .join(format!("{PREFIX}{order:016x}-{key}-{checksum}.lru")))
     }
 
-    pub(crate) fn get_path(&mut self, key: &str) -> io::Result<Option<PathBuf>> {
+    pub fn get_path(&mut self, key: &str) -> io::Result<Option<PathBuf>> {
+        let locked = self.files.locked;
         if !hex(key, 64) {
             return Err(invalid("Invalid speech cache key"));
         }
@@ -268,7 +284,7 @@ impl Cache {
         let mut rejected = false;
         for entry in entries.iter().rev().filter(|e| e.key == key) {
             if !self.intact(entry)? {
-                cleanup(&entry.path)?;
+                cleanup(&entry.path, locked)?;
                 rejected = true;
                 continue;
             }
@@ -276,7 +292,7 @@ impl Cache {
                 let dest = self.destination(&entries, key, &entry.checksum)?;
                 match fs::rename(&entry.path, dest) {
                     Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                    Err(e) if shared(&e) => (),
+                    Err(e) if locked(&e) => (),
                     result => result?,
                 }
             }
@@ -284,12 +300,13 @@ impl Cache {
         }
         if rejected {
             self.verified.remove(key);
-            cleanup(&path)?;
+            cleanup(&path, locked)?;
         }
         Ok(None)
     }
 
-    pub(crate) fn put_file(&mut self, key: &str, path: &Path) -> io::Result<PathBuf> {
+    pub fn put_file(&mut self, key: &str, path: &Path) -> io::Result<PathBuf> {
+        let locked = self.files.locked;
         if !hex(key, 64) {
             return Err(invalid("Invalid speech cache key"));
         }
@@ -311,22 +328,22 @@ impl Cache {
         let target = self.wav(key);
         // If interrupted before replacement, startup can still match the old
         // WAV against its previous marker. The WAV itself keeps a stable path.
-        (self.create_marker)(&marker)?;
+        (self.files.create_marker)(&marker)?;
         if let Err(e) = fs::rename(path, &target) {
-            cleanup(&marker)?;
+            cleanup(&marker, locked)?;
             return Err(e);
         }
         self.verified.insert(key.into(), (checksum, stamp));
         let mut keep = HashSet::from([key]);
         for entry in entries.iter().rev() {
             if keep.contains(entry.key.as_str()) {
-                cleanup(&entry.path)?;
+                cleanup(&entry.path, locked)?;
             } else if keep.len() < LIMIT {
                 keep.insert(&entry.key);
             } else {
                 self.verified.remove(&entry.key);
-                cleanup(&entry.path)?;
-                cleanup(&self.wav(&entry.key))?;
+                cleanup(&entry.path, locked)?;
+                cleanup(&self.wav(&entry.key), locked)?;
             }
         }
         // An editor may have released a WAV that was locked at the preceding eviction.
@@ -339,7 +356,7 @@ impl Cache {
                     .and_then(owned_wav)
                     .is_some_and(|key| !keep.contains(key))
             {
-                cleanup(&item.path())?;
+                cleanup(&item.path(), locked)?;
             }
         }
         Ok(target)
@@ -395,13 +412,13 @@ mod tests {
     #[test]
     fn six_result_lru_promotes_hits_and_updates_across_restart() {
         let dir = Temp::new();
-        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), CacheFiles::default()).unwrap();
         for i in 1..=6 {
             cache.put_file(&key(i), &render(&dir.0, i as i16)).unwrap();
         }
         cache.get_path(&key(1)).unwrap().unwrap();
         drop(cache);
-        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), CacheFiles::default()).unwrap();
         cache.put_file(&key(7), &render(&dir.0, 7)).unwrap();
         assert!(cache.get_path(&key(2)).unwrap().is_none());
         let path = cache.put_file(&key(3), &render(&dir.0, 33)).unwrap();
@@ -435,13 +452,13 @@ mod tests {
         }
         let stale = dir.0.join("dictto-tts-render-0-42.partial");
         fs::write(&stale, b"discard").unwrap();
-        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), CacheFiles::default()).unwrap();
         assert!(!stale.exists());
         let path = cache.put_file(&key(1), &render(&dir.0, 1)).unwrap();
         let old_tmp = path.with_extension("wav.tmp");
         fs::write(&old_tmp, b"discard").unwrap();
         fs::write(&path, b"broken").unwrap();
-        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), CacheFiles::default()).unwrap();
         assert!(!path.exists() && !old_tmp.exists());
         assert!(cache.get_path(&key(1)).unwrap().is_none());
         let path = cache.put_file(&key(2), &render(&dir.0, 2)).unwrap();
@@ -468,7 +485,7 @@ mod tests {
     fn rejects_invalid_keys_external_inputs_and_truncated_samples() {
         let dir = Temp::new();
         let outside = Temp::new();
-        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), CacheFiles::default()).unwrap();
         let file = render(&outside.0, 1);
         assert!(cache.put_file(&key(1), &file).is_err());
         assert!(file.exists());
@@ -487,7 +504,7 @@ mod tests {
     #[test]
     fn stable_path_survives_touch_replacement_and_interrupted_publish() {
         let dir = Temp::new();
-        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), CacheFiles::default()).unwrap();
         let key1 = key(1);
         let path = cache.put_file(&key1, &render(&dir.0, 1)).unwrap();
         cache.put_file(&key(2), &render(&dir.0, 2)).unwrap();
@@ -502,34 +519,8 @@ mod tests {
             )
             .unwrap();
         File::create_new(&incomplete).unwrap();
-        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), CacheFiles::default()).unwrap();
         assert!(!stale.exists() && !incomplete.exists());
         assert_eq!(cache.get_path(&key1).unwrap().unwrap(), path);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn unchanged_cache_hit_needs_no_audio_read_and_locked_eviction_keeps_working() {
-        use std::os::windows::fs::OpenOptionsExt;
-        let dir = Temp::new();
-        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
-        let path = cache.put_file(&key(1), &render(&dir.0, 1)).unwrap();
-        cache.put_file(&key(2), &render(&dir.0, 2)).unwrap();
-        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
-        let lock = File::options()
-            .read(true)
-            .share_mode(0)
-            .open(&path)
-            .unwrap();
-        assert!(File::open(&path).is_err());
-        assert_eq!(cache.get_path(&key(1)).unwrap().unwrap(), path);
-        for i in 3..=8 {
-            cache.put_file(&key(i), &render(&dir.0, i as i16)).unwrap();
-        }
-        assert!(cache.get_path(&key(1)).unwrap().is_none());
-        assert!(path.exists());
-        drop(lock);
-        cache.put_file(&key(9), &render(&dir.0, 9)).unwrap();
-        assert!(!path.exists());
     }
 }

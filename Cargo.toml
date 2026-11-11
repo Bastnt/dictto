@@ -10,3 +10,8 @@ members = [
 # Without this, partitioning noise in the core alone pushed the native exe past its size budget.
 [profile.release.package.dictto-core]
 codegen-units = 1
+
+# The core's generic microphone route is instantiated here; split across 16 units it
+# added about 26 KB to the native exe.
+[profile.release.package.dictto-windows]
+codegen-units = 1

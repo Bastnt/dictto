@@ -35,7 +35,8 @@ pub struct PolicyVtable {
 }
 const POLICY_CLASS: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
 
-pub(super) struct WindowsDefaults;
+/// The default communications capture endpoint and VB-CABLE as its virtual replacement.
+pub struct WindowsDefaults;
 fn enumerator() -> windows::core::Result<IMMDeviceEnumerator> {
     unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
 }
@@ -165,6 +166,12 @@ pub(super) fn cable_endpoint(flow: EDataFlow) -> Result<String, String> {
 }
 
 impl Defaults for WindowsDefaults {
+    fn system_name(&self) -> &'static str {
+        "Windows"
+    }
+    fn input_name(&self) -> &'static str {
+        "communications microphone"
+    }
     fn current(&self) -> Result<String, String> {
         let _apartment = Apartment::open()?;
         unsafe {

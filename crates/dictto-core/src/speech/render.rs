@@ -132,7 +132,7 @@ fn with_cache<T>(
     let mut slot = state.cache.lock().map_err(|e| e.to_string())?;
     if slot.is_none() || !state.audio_dir.is_dir() {
         *slot = Some(
-            super::cache::Cache::new(state.audio_dir.clone(), state.speech.create_marker)
+            super::cache::Cache::new(state.audio_dir.clone(), state.speech.cache_files)
                 .map_err(|e| format!("Cannot open Speech Audio: {e}"))?,
         );
     }

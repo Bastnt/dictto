@@ -6,17 +6,16 @@ use crate::keys::{Chord, Key, Tracker};
 use crate::transcription::{openai_api::OpenAIWhisper, TranscriptionConfig, TranscriptionEngine};
 use crate::CoreState;
 use std::collections::{BTreeSet, HashMap};
-use std::fs::File;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 pub mod api;
-mod cache;
+pub mod cache;
 mod render;
 pub mod route;
 pub(crate) mod session;
+pub mod virtual_mic;
 
 pub use render::Player;
 
@@ -38,13 +37,7 @@ pub struct SpeechPlatform {
     pub player: Arc<dyn Player + Send>,
     pub virtual_mic: Arc<dyn VirtualMic>,
     pub selection: Arc<dyn SelectionReader>,
-    /// Creates a new cache marker file; Windows hides it from Explorer.
-    pub create_marker: fn(&Path) -> io::Result<File>,
-}
-
-/// Cache marker creator for platforms with no hidden-file attribute.
-pub fn create_marker(path: &Path) -> io::Result<File> {
-    File::create_new(path)
+    pub cache_files: cache::CacheFiles,
 }
 
 /// Speech state registered on the host next to `CoreState` by apps with speech.
@@ -61,7 +54,7 @@ pub struct SpeechState {
 impl SpeechState {
     pub fn new(core: Arc<CoreState>, data_dir: &Path, platform: SpeechPlatform) -> Result<Self, String> {
         let audio_dir = std::path::absolute(data_dir.join("Speech Audio")).map_err(|e| e.to_string())?;
-        let cache = cache::Cache::new(audio_dir.clone(), platform.create_marker)
+        let cache = cache::Cache::new(audio_dir.clone(), platform.cache_files)
             .map_err(|e| log::warn!("Could not open speech audio folder: {e}"))
             .ok();
         Ok(Self {
@@ -413,7 +406,7 @@ mod tests {
             player: Arc::new(Unused),
             virtual_mic: Arc::new(Unused),
             selection: Arc::new(Unused),
-            create_marker,
+            cache_files: cache::CacheFiles::default(),
         }
     }
 

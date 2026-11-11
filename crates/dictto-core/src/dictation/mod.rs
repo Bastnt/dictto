@@ -350,7 +350,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                     }
                     match (&state, event) {
                         #[cfg(feature = "speech")]
-                        (_, HotkeyEvent::Speech(_)) => unreachable!(),
+                        (_, HotkeyEvent::Speech(_)) => {}
                         // --- IDLE ---
                         (State::Idle, HotkeyEvent::Pressed) => {
                             log::debug!("[hotkey] {} + Pressed → starting recording", state.name());

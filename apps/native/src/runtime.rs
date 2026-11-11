@@ -24,7 +24,7 @@ impl NativeRuntime {
         sink: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
     ) -> Result<Self, String> {
         crate::host::async_runtime::initialize()?;
-        let mic_route = Arc::new(MicRoute::new(&data_dir));
+        let mic_route = Arc::new(dictto_windows::speech::manager(&data_dir));
         let core = Arc::new(CoreState {
             platform: dictto_windows::platform(),
             audio_recorder: Mutex::new(Box::new(dictto_windows::WindowsRecorder::new())),
@@ -36,7 +36,7 @@ impl NativeRuntime {
             device_monitor: Arc::new(dictto_core::audio::DeviceMonitorState::new()),
             device_monitor_shutdown: Mutex::new(None),
         });
-        let platform = dictto_windows::speech::platform(mic_route.clone());
+        let platform = dictto_windows::speech::platform(&mic_route);
         let state = Arc::new(SpeechState::new(core.clone(), &data_dir, platform)?);
         let app = AppHandle::new(&core, Arc::new(sink)).with_state(&state);
         state

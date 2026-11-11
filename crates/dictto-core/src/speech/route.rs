@@ -1,16 +1,25 @@
-//! Crash-safe switching of the default communications microphone to a virtual one.
+//! Crash-safe switching of the default microphone to a virtual one.
 //! A journal written before each switch lets a later start restore the user's input.
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::path::Path;
 
-/// The OS default communications input and the virtual microphone it is switched to.
+/// The OS default input that other applications capture, and the virtual microphone
+/// it is switched to.
 pub trait Defaults {
     fn current(&self) -> Result<String, String>;
     fn target(&self) -> Result<String, String>;
     fn set(&self, id: &str) -> Result<(), String>;
     fn owns_route(&self, id: &str) -> Result<bool, String> {
         Ok(self.target()? == id)
+    }
+    /// Subject of user-facing messages, e.g. "The system has not confirmed ...".
+    fn system_name(&self) -> &'static str {
+        "The system"
+    }
+    /// What users call the switched input in this OS's settings.
+    fn input_name(&self) -> &'static str {
+        "default microphone"
     }
 }
 
@@ -28,7 +37,11 @@ fn observed_after_set(defaults: &impl Defaults, previous: &str) -> Result<String
             return Ok(current);
         }
         if std::time::Instant::now() >= until {
-            return Err("Windows has not confirmed the communications microphone change.".into());
+            return Err(format!(
+                "{} has not confirmed the {} change.",
+                defaults.system_name(),
+                defaults.input_name()
+            ));
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -81,7 +94,7 @@ pub fn acquire(path: &Path, defaults: &impl Defaults) -> Result<String, String> 
         // No policy write was issued; the endpoint can disappear or be selected manually here.
         fs::remove_file(path).map_err(|e| e.to_string())?;
         return Err(current.err().unwrap_or_else(|| {
-            "The communications microphone changed before routing began.".into()
+            format!("The {} changed before routing began.", defaults.input_name())
         }));
     }
     if let Err(error) = defaults.set(&target) {
@@ -94,7 +107,7 @@ pub fn acquire(path: &Path, defaults: &impl Defaults) -> Result<String, String> 
         .map_err(|e| format!("{e} The recovery file was retained."))?;
     if observed != target {
         fs::remove_file(path).map_err(|e| e.to_string())?;
-        return Err("The user selected a different communications microphone.".into());
+        return Err(format!("The user selected a different {}.", defaults.input_name()));
     }
     Ok(target)
 }
