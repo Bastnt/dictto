@@ -275,6 +275,15 @@ impl Runtime {
     pub fn set_hotkey_capture(&self, active: bool) {
         crate::dictation::set_capture(active);
     }
+    /// Drops key events while the session is locked or inactive; independent of
+    /// `set_hotkey_capture`.
+    pub fn input_suspended(&self, suspended: bool) {
+        crate::dictation::set_input_suspended(suspended);
+    }
+    /// Releases held keys, e.g. when the keyboard holding them disappears.
+    pub fn reset_input(&self) {
+        crate::dictation::reset_input();
+    }
     pub fn start_recording(&self) {
         crate::dictation::bar_start();
     }

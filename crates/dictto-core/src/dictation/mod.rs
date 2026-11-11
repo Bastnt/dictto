@@ -7,10 +7,36 @@ use crate::pipeline::RecordedAudio;
 use crate::platform::{Sound, Sounds};
 use std::sync::{Arc, Mutex, OnceLock};
 
-static TRACKER: OnceLock<Mutex<keys::Tracker>> = OnceLock::new();
+/// Dictation chord state plus the host's input suspension. Suspension is kept apart from
+/// `Tracker::suspended`, which settings capture owns, so neither clears the other.
+#[derive(Default)]
+struct Input {
+    tracker: keys::Tracker,
+    suspended: bool,
+}
 
-fn tracker() -> &'static Mutex<keys::Tracker> {
-    TRACKER.get_or_init(|| Mutex::new(keys::Tracker::default()))
+impl Input {
+    /// `None` when suspended input drops the event.
+    fn key(&mut self, source: u16, key: Option<keys::Key>, down: bool) -> Option<Option<bool>> {
+        if self.suspended {
+            return None;
+        }
+        Some(key.and_then(|key| self.tracker.event_from(source, key, down)))
+    }
+    /// `Some(false)` when a held chord is released by the reset.
+    fn reset(&mut self) -> Option<bool> {
+        self.tracker.reset()
+    }
+    fn set_suspended(&mut self, suspended: bool) -> Option<bool> {
+        self.suspended = suspended;
+        self.reset()
+    }
+}
+
+static INPUT: OnceLock<Mutex<Input>> = OnceLock::new();
+
+fn input() -> &'static Mutex<Input> {
+    INPUT.get_or_init(Default::default)
 }
 
 fn send_transition(transition: Option<bool>) {
@@ -20,17 +46,35 @@ fn send_transition(transition: Option<bool>) {
 }
 
 pub fn configure(value: keys::Chord) {
-    let mut tracker = tracker().lock().unwrap();
-    send_transition(tracker.reset());
-    tracker.chord = value;
+    let mut input = input().lock().unwrap();
+    send_transition(input.tracker.reset());
+    input.tracker.chord = value;
 }
 
 pub fn set_capture(active: bool) {
     #[cfg(feature = "speech")]
     crate::speech::suspend(active);
-    let mut tracker = tracker().lock().unwrap();
-    send_transition(tracker.reset());
-    tracker.suspended = active;
+    let mut input = input().lock().unwrap();
+    send_transition(input.tracker.reset());
+    input.tracker.suspended = active;
+}
+
+/// Forgets every held key, as when the keyboard that held them disappears. A dictation
+/// hold in progress receives its release and stops normally.
+pub fn reset_input() {
+    let mut input = input().lock().unwrap();
+    send_transition(input.reset());
+    #[cfg(feature = "speech")]
+    crate::speech::reset_input();
+}
+
+/// While suspended (locked or inactive session) key events are neither tracked nor
+/// swallowed. Both edges reset held keys, since releases may be missed in between.
+pub fn set_input_suspended(suspended: bool) {
+    let mut input = input().lock().unwrap();
+    send_transition(input.set_suspended(suspended));
+    #[cfg(feature = "speech")]
+    crate::speech::reset_input();
 }
 
 /// Feeds one key transition from the platform keyboard source. `source` is the platform
@@ -38,9 +82,12 @@ pub fn set_capture(active: bool) {
 /// Unmapped keys (`key == None`) never affect the dictation chord but still reach speech.
 /// Returns true when the event must be swallowed.
 pub fn key_event(source: u16, key: Option<keys::Key>, down: bool) -> bool {
-    if let Some(key) = key {
-        send_transition(tracker().lock().unwrap().event_from(source, key, down));
-    }
+    // Held across the speech handling so a concurrent suspension cannot interleave.
+    let mut input = input().lock().unwrap();
+    let Some(transition) = input.key(source, key, down) else {
+        return false;
+    };
+    send_transition(transition);
     speech_key_event(source, key, down)
 }
 
@@ -646,6 +693,49 @@ mod tests {
     #[test]
     fn invalid_stored_hotkey_falls_back() {
         assert_eq!(hotkey_from_setting(Some("Ctrl+Banana")).display(), "Ctrl+Win");
+    }
+
+    fn held_chord() -> Input {
+        let mut input = Input::default();
+        input.tracker.chord = keys::Chord::parse("Ctrl+F8").unwrap();
+        assert_eq!(input.key(0xa2, Some(keys::Key::Ctrl), true), Some(None));
+        assert_eq!(input.key(0x77, Some(keys::Key::F(8)), true), Some(Some(true)));
+        input
+    }
+
+    #[test]
+    fn reset_releases_a_held_chord() {
+        let mut input = held_chord();
+        assert_eq!(input.reset(), Some(false));
+        assert_eq!(input.reset(), None);
+        // The forgotten Ctrl must be pressed again.
+        assert_eq!(input.key(0x77, Some(keys::Key::F(8)), true), Some(None));
+    }
+
+    #[test]
+    fn suspending_input_releases_the_chord_and_drops_keys() {
+        let mut input = held_chord();
+        assert_eq!(input.set_suspended(true), Some(false));
+        assert_eq!(input.key(0xa2, Some(keys::Key::Ctrl), true), None);
+        assert_eq!(input.key(0x77, Some(keys::Key::F(8)), true), None);
+        assert_eq!(input.set_suspended(false), None);
+        assert_eq!(input.key(0xa2, Some(keys::Key::Ctrl), true), Some(None));
+        assert_eq!(input.key(0x77, Some(keys::Key::F(8)), true), Some(Some(true)));
+    }
+
+    #[test]
+    fn capture_and_input_suspension_do_not_clobber_each_other() {
+        let mut input = held_chord();
+        input.reset();
+        input.tracker.suspended = true;
+        input.set_suspended(true);
+        input.set_suspended(false);
+        assert!(input.tracker.suspended);
+        assert_eq!(input.key(0x77, Some(keys::Key::F(8)), true), Some(None));
+        input.set_suspended(true);
+        input.tracker.suspended = false;
+        assert!(input.suspended);
+        assert_eq!(input.key(0x77, Some(keys::Key::F(8)), true), None);
     }
 
     #[test]

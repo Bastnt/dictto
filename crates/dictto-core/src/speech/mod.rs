@@ -163,6 +163,13 @@ pub fn parse_bindings(
 }
 
 impl Shortcuts {
+    fn reset(&mut self) {
+        for (_, tracker) in &mut self.bindings {
+            tracker.reset();
+        }
+        self.suppressed.clear();
+    }
+
     fn event(&mut self, source: u16, key: Option<Key>, down: bool) -> (Option<Action>, bool) {
         let mut hit = None;
         for (action, tracker) in &mut self.bindings {
@@ -188,6 +195,11 @@ impl Shortcuts {
 /// Returns the action whose chord this event completes and whether to swallow the event.
 pub(crate) fn key_event(source: u16, key: Option<Key>, down: bool) -> (Option<Action>, bool) {
     shortcuts().lock().unwrap().event(source, key, down)
+}
+
+/// Releases every speech chord and forgets swallowed keys whose release may never come.
+pub(crate) fn reset_input() {
+    shortcuts().lock().unwrap().reset();
 }
 
 pub(crate) fn suspend(active: bool) {
@@ -512,6 +524,19 @@ pub(crate) mod tests {
         assert_eq!(chords.event(0xa4, Some(Key::Alt), true), (Some(Action::ReadVoice), false));
         assert_eq!(chords.event(0xa4, Some(Key::Alt), false), (None, false));
         assert_eq!(chords.event(0x1b, None, false), (None, false));
+    }
+
+    #[test]
+    fn reset_forgets_held_and_swallowed_keys() {
+        let settings = HashMap::from([("tts_hotkey_read_clone".into(), "F9".into())]);
+        let mut chords = Shortcuts {
+            bindings: parse_bindings(&settings, true).unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(chords.event(0x78, Some(Key::F(9)), true), (Some(Action::ReadClone), true));
+        chords.reset();
+        assert!(chords.suppressed.is_empty());
+        assert_eq!(chords.event(0x78, Some(Key::F(9)), true), (Some(Action::ReadClone), true));
     }
 
     #[test]
