@@ -6,3 +6,7 @@ members = [
   "apps/native",
   "apps/desktop/src-tauri",
 ]
+
+# Without this, partitioning noise in the core alone pushed the native exe past its size budget.
+[profile.release.package.dictto-core]
+codegen-units = 1
