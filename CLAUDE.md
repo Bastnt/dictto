@@ -25,7 +25,7 @@ cargo test --workspace
 ### Recording Pipeline
 
 Triggered by `Ctrl+Win` (push-to-talk):
-1. Key press -> starts CPAL audio capture
+1. Key press -> starts audio capture (WASAPI on Windows)
 2. Key release -> stops recording, returns WAV bytes (16kHz mono)
 3. Transcribe via OpenAI Whisper API
 4. Clean text via OpenAI GPT
@@ -69,7 +69,7 @@ Both use `async-trait`. Import the trait explicitly when using in commands.
 ## Conventions
 
 - **Package manager**: pnpm (monorepo workspaces)
-- **Error handling**: `thiserror` derive macros with `Serialize` for Tauri IPC
+- **Error handling**: `thiserror` in `dictto-core`; Tauri commands return `String` errors
 - **Async**: `tokio` runtime, `async-trait` for trait definitions
 - **State**: `dictto_core::Runtime` (managed Tauri state), accessed via `State<Runtime>` in commands
 

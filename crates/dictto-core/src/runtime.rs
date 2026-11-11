@@ -22,6 +22,8 @@ struct RuntimeState {
     speech: Option<Arc<SpeechState>>,
     app: AppHandle,
     started: AtomicBool,
+    // The OS input hook cannot be removed, so a retried start must not install it twice.
+    input_installed: AtomicBool,
 }
 impl Runtime {
     pub fn new(
@@ -90,6 +92,7 @@ impl Runtime {
                 speech,
                 app,
                 started: AtomicBool::new(false),
+                input_installed: AtomicBool::new(false),
             }),
         })
     }
@@ -112,7 +115,9 @@ impl Runtime {
         }
         if settings.get("auto_start").map(String::as_str) == Some("true") {
             // Refreshes entries written by older versions that lack the launch flag.
-            self.inner.core.platform.services.set_autostart(true)?;
+            if let Err(error) = self.inner.core.platform.services.set_autostart(true) {
+                log::warn!("Could not refresh the auto-start entry: {error}");
+            }
         }
         if self.inner.started.swap(true, Ordering::AcqRel) {
             return Ok(());
@@ -144,12 +149,18 @@ impl Runtime {
         #[cfg(not(feature = "speech"))]
         let _ = settings;
         // Installed first: a failure leaves the dictation channels unset so a retry can succeed.
-        self.inner.core.platform.services.install_input()?;
+        if !self.inner.input_installed.load(Ordering::Acquire) {
+            self.inner.core.platform.services.install_input()?;
+            self.inner.input_installed.store(true, Ordering::Release);
+        }
         crate::dictation::start(&self.inner.app)
     }
     #[cfg(feature = "speech")]
     pub fn speech_audio_dir(&self) -> Option<PathBuf> {
         self.inner.speech.as_ref().map(|s| s.audio_dir.clone())
+    }
+    pub fn get_setting(&self, key: &str) -> Option<String> {
+        self.inner.core.db.lock().ok()?.get_setting(key)
     }
     pub fn get_settings(&self) -> Result<HashMap<String, String>, String> {
         self.inner
@@ -339,6 +350,18 @@ mod tests {
         #[cfg(not(feature = "speech"))]
         let runtime = Runtime::new(path, crate::test_support::platform(), sink);
         runtime.unwrap()
+    }
+
+    #[cfg(feature = "speech")]
+    #[test]
+    fn runtime_without_speech_still_sets_the_hotkey_when_the_feature_is_compiled_in() {
+        let path = std::env::temp_dir().join(format!("dictto-core-nospeech-{}", std::process::id()));
+        {
+            let runtime = Runtime::new(path.clone(), crate::test_support::platform(), |_, _| {}).unwrap();
+            runtime.set_setting("hotkey", "Ctrl+Shift+F8").unwrap();
+            assert_eq!(runtime.get_setting("hotkey").as_deref(), Some("Ctrl+Shift+F8"));
+        }
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

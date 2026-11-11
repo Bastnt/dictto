@@ -24,6 +24,6 @@ pub fn platform() -> dictto_core::platform::Platform {
         sounds: std::sync::Arc::new(WindowsSounds),
         devices: std::sync::Arc::new(WindowsDevices),
         services: std::sync::Arc::new(WindowsServices),
-        new_recorder: || Box::new(WindowsRecorder::new()),
+        new_recorder: std::sync::Arc::new(|| Box::new(WindowsRecorder::new())),
     }
 }

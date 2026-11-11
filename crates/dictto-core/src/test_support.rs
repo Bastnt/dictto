@@ -41,7 +41,7 @@ pub(crate) fn platform() -> crate::platform::Platform {
         sounds: std::sync::Arc::new(NoSounds),
         devices: std::sync::Arc::new(NoDevices),
         services: std::sync::Arc::new(NoServices),
-        new_recorder: || Box::new(NoRecorder),
+        new_recorder: std::sync::Arc::new(|| Box::new(NoRecorder)),
     }
 }
 pub(crate) fn core_state(db: crate::db::Database) -> crate::CoreState {

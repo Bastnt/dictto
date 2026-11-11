@@ -4,7 +4,7 @@ use tauri::State;
 
 #[tauri::command]
 pub fn get_setting(key: String, runtime: State<'_, Runtime>) -> Result<Option<String>, String> {
-    Ok(runtime.get_settings()?.remove(&key))
+    Ok(runtime.get_setting(&key))
 }
 
 #[tauri::command]

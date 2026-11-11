@@ -4,3 +4,5 @@ exe size: 9370112 bytes
 After workspace (root target/): exe 9385984 bytes; WorkingSet64 19468288 / 19419136, PrivateMemorySize64 2985984 / 3002368, Threads 7 / 7
 Tests before: native 82 passed + 3 passed (4 ignored), tauri lib 54 passed
 After Task 7 (Runtime in core, thin hosts): native exe 9201152 bytes; --smoke-test 10 s WorkingSet64 19468288, PrivateMemorySize64 3022848, Threads 7; --smoke-test --autostart WorkingSet64 13615104, PrivateMemorySize64 2334720, Threads 7. Tauri release exe 19558400 bytes.
+After Task 7 fix round 1: native exe 9202688 bytes; --smoke-test 10 s WorkingSet64 19439616, PrivateMemorySize64 3010560, Threads 7; --smoke-test --autostart WorkingSet64 13598720, PrivateMemorySize64 2326528, Threads 7. Tauri release exe 19595776 bytes.
+Manual checks pending for the owner: --smoke-test settings tabs render; Ctrl+Win dictation pastes cleaned text and a short tap retries; Ctrl+Shift+F9 reads a selection; "Send speech to Dictto Microphone" routes to VB-CABLE and restores the input; Tauri dictation without speech shortcuts and settings tabs load; instance guard with both variants running; Tauri auto_start toggle error display.

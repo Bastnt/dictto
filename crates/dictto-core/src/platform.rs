@@ -58,5 +58,5 @@ pub struct Platform {
     pub devices: Arc<dyn Devices>,
     pub services: Arc<dyn Services>,
     /// The runtime builds the recorder, and a fresh one at shutdown to release the old.
-    pub new_recorder: fn() -> Box<dyn Recorder>,
+    pub new_recorder: Arc<dyn Fn() -> Box<dyn Recorder> + Send + Sync>,
 }

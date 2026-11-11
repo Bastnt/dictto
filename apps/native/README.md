@@ -104,7 +104,8 @@ them. Add `--autostart` to verify tray-only startup without recording services.
 
 The shared logic lives in `crates/dictto-core` (speech behind its `speech` feature) and
 the Win32 services in `crates/dictto-windows`; the native host drives `dictto_core::Runtime`
-through an event sink that posts Win32 messages, on a two-worker Tokio runtime. The hidden tray host remains alive without settings.
+through an event sink that posts Win32 messages, on a two-worker Tokio runtime.
+The hidden tray host remains alive without settings.
 Changes to shared services must be checked in both variants. Measure working set,
 private committed memory, threads and on-disk size separately. `--smoke-test`
 comparisons exclude recording hooks, device monitoring and model warmup.
