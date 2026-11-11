@@ -107,7 +107,8 @@ NTSTATUS DicttoCreateFeed(PDEVICE_OBJECT adapter)
     PDEVICE_OBJECT device = nullptr;
     if (!owner) {
         UNICODE_STRING name = RTL_CONSTANT_STRING(L"\\Device\\DicttoMicFeed");
-        UNICODE_STRING acl = RTL_CONSTANT_STRING(L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GW;;;IU)");
+        // Win32 CreateFile adds FILE_READ_ATTRIBUTES to the requested write access.
+        UNICODE_STRING acl = RTL_CONSTANT_STRING(L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x120196;;;IU)");
         status = IoCreateDeviceSecure(adapter->DriverObject, 0, &name, FeedDeviceType,
                                       FILE_DEVICE_SECURE_OPEN, TRUE, &acl, &FeedClass, &device);
         if (NT_SUCCESS(status)) {
@@ -178,3 +179,4 @@ void DicttoReadPcm(const void* stream, PUCHAR destination, ULONG length)
     KeReleaseSpinLock(&lock, irql);
     RtlZeroMemory(destination + bytes, length - bytes);
 }
+

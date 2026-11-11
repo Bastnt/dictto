@@ -36,3 +36,6 @@ apps/desktop/src-tauri/gen/
 
 # Machine-specific cargo config (MSYS2 linker workaround)
 apps/desktop/src-tauri/.cargo/config.toml
+
+# Python
+__pycache__/

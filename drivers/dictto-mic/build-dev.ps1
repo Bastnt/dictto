@@ -89,7 +89,8 @@ try {
     Export-Certificate -Cert $cert -FilePath "$package/DicttoMic-test.cer" | Out-Null
     & "$PSScriptRoot/verify-package.ps1" $package
 
-    Copy-Item "$PSScriptRoot/verify-package.ps1","$PSScriptRoot/tests/verify_stream.py","$PSScriptRoot/BUILDING.md" $package
+    Copy-Item "$wdk/tools/$sdk/x64/devgen.exe" $package
+    Copy-Item "$PSScriptRoot/install-dev.ps1","$PSScriptRoot/verify-package.ps1","$PSScriptRoot/tests/verify_stream.py","$PSScriptRoot/BUILDING.md" $package
     $licenses = New-Item -ItemType Directory (Join-Path $package 'licenses')
     Copy-Item "$PSScriptRoot/sysvad/LICENSE" (Join-Path $licenses 'sysvad-LICENSE.txt')
     Copy-Item "$PSScriptRoot/sysvad/UPSTREAM.txt" (Join-Path $licenses 'sysvad-UPSTREAM.txt')
@@ -101,3 +102,4 @@ try {
 } finally {
     $env:PATH = $oldPath
 }
+
