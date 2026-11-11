@@ -1,0 +1,44 @@
+name: Core
+
+on:
+  push:
+    paths: ['crates/**', 'apps/**', 'Cargo.*', '.github/workflows/core.yml']
+  pull_request:
+    paths: ['crates/**', 'apps/**', 'Cargo.*', '.github/workflows/core.yml']
+
+jobs:
+  core-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+
+      - name: Install system libraries
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+      # The Tauri app builds the core without features; the native app enables them all.
+      - name: Test core (all features)
+        run: cargo test -p dictto-core --all-features
+
+      - name: Test core (no features)
+        run: cargo test -p dictto-core
+
+  workspace-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+
+      # tauri::generate_context! requires frontendDist to exist; dist/ is gitignored.
+      - name: Create empty frontend dist
+        shell: bash
+        run: mkdir -p apps/desktop/dist
+
+      - name: Test workspace
+        run: cargo test --workspace
