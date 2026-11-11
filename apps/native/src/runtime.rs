@@ -1,6 +1,8 @@
 use crate::host::{AppHandle, Emitter};
-use crate::{MicrophoneInfo, SpeechState};
+use crate::MicrophoneInfo;
+use dictto_core::speech::SpeechState;
 use dictto_core::CoreState;
+use dictto_windows::speech::Manager as MicRoute;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,6 +14,7 @@ pub struct NativeRuntime {
 }
 struct RuntimeState {
     state: Arc<SpeechState>,
+    mic_route: Arc<MicRoute>,
     app: AppHandle,
     started: AtomicBool,
 }
@@ -21,17 +24,11 @@ impl NativeRuntime {
         sink: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
     ) -> Result<Self, String> {
         crate::host::async_runtime::initialize()?;
-        let speech_audio_dir =
-            std::path::absolute(data_dir.join("Speech Audio")).map_err(|e| e.to_string())?;
-        let speech_cache = crate::speech::cache::Cache::new(speech_audio_dir.clone())
-            .map_err(|e| log::warn!("Could not open speech audio folder: {e}"))
-            .ok();
-        let mic_route = Arc::new(crate::speech::virtual_mic::Manager::new(&data_dir));
-        let sample_path = data_dir.join("voice-sample.wav");
+        let mic_route = Arc::new(MicRoute::new(&data_dir));
         let core = Arc::new(CoreState {
             platform: dictto_windows::platform(),
             audio_recorder: Mutex::new(Box::new(dictto_windows::WindowsRecorder::new())),
-            db: Mutex::new(dictto_core::db::Database::new(data_dir).map_err(|e| e.to_string())?),
+            db: Mutex::new(dictto_core::db::Database::new(data_dir.clone()).map_err(|e| e.to_string())?),
             http_client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()
@@ -39,14 +36,9 @@ impl NativeRuntime {
             device_monitor: Arc::new(dictto_core::audio::DeviceMonitorState::new()),
             device_monitor_shutdown: Mutex::new(None),
         });
-        let state = Arc::new(SpeechState {
-            core,
-            mic_route,
-            speech_cache: Mutex::new(speech_cache),
-            speech_audio_dir,
-            sample_path,
-        });
-        let app = AppHandle::new(&state.core, Arc::new(sink)).with_state(&state);
+        let platform = dictto_windows::speech::platform(mic_route.clone());
+        let state = Arc::new(SpeechState::new(core.clone(), &data_dir, platform)?);
+        let app = AppHandle::new(&core, Arc::new(sink)).with_state(&state);
         state
             .audio_recorder
             .lock()
@@ -55,6 +47,7 @@ impl NativeRuntime {
         Ok(Self {
             inner: Arc::new(RuntimeState {
                 state,
+                mic_route,
                 app,
                 started: AtomicBool::new(false),
             }),
@@ -64,12 +57,11 @@ impl NativeRuntime {
         if self.inner.started.load(Ordering::Acquire) {
             return Ok(());
         }
-        if let Err(error) = self.inner.state.mic_route.recover() {
+        if let Err(error) = self.inner.mic_route.recover() {
             self.report_route_error(error);
         }
         let settings = self.get_settings()?;
         self.inner
-            .state
             .mic_route
             .set_enabled(settings.get("tts_virtual_mic").is_some_and(|v| v == "true"))?;
         if settings.get("auto_start").map(String::as_str) == Some("true") {
@@ -100,13 +92,12 @@ impl NativeRuntime {
         Ok(())
     }
     fn start_dictation(&self, settings: &HashMap<String, String>) -> Result<(), String> {
-        crate::speech::configure(crate::speech::parse_bindings(settings, false)?);
-        dictto_core::dictation::set_speech_hooks(Box::<crate::speech::session::Hooks>::default());
+        dictto_core::speech::configure(dictto_core::speech::parse_bindings(settings, false)?);
         dictto_core::dictation::start(&self.inner.app)?;
         dictto_windows::keyboard::install()
     }
     pub fn speech_audio_dir(&self) -> PathBuf {
-        self.inner.state.speech_audio_dir.clone()
+        self.inner.state.audio_dir.clone()
     }
     pub fn get_settings(&self) -> Result<HashMap<String, String>, String> {
         self.inner
@@ -134,24 +125,24 @@ impl NativeRuntime {
         {
             let db = self.inner.state.db.lock().map_err(|e| e.to_string())?;
             let bindings = if key == "hotkey"
-                || crate::speech::BINDINGS.iter().any(|(name, _)| *name == key)
+                || dictto_core::speech::BINDINGS.iter().any(|(name, _)| *name == key)
             {
                 let mut settings = db.get_all_settings().map_err(|e| e.to_string())?;
                 settings.insert(key.into(), value.into());
-                Some(crate::speech::parse_bindings(&settings, true)?)
+                Some(dictto_core::speech::parse_bindings(&settings, true)?)
             } else {
                 None
             };
             db.set_setting(key, value).map_err(|e| e.to_string())?;
             if let Some(bindings) = bindings {
-                crate::speech::configure(bindings);
+                dictto_core::speech::configure(bindings);
             }
             if let Some(chord) = chord {
                 dictto_core::dictation::configure(chord);
             }
         }
         if key == "tts_virtual_mic" {
-            if let Err(error) = self.inner.state.mic_route.set_enabled(value == "true") {
+            if let Err(error) = self.inner.mic_route.set_enabled(value == "true") {
                 self.report_route_error(error);
             }
         }
@@ -234,12 +225,12 @@ impl NativeRuntime {
             .emit("speech-error", serde_json::json!({"message":message}));
     }
     pub fn session_changed(&self, suspended: bool) {
-        if let Err(error) = self.inner.state.mic_route.session_changed(suspended) {
+        if let Err(error) = self.inner.mic_route.session_changed(suspended) {
             self.report_route_error(error);
         }
     }
     pub fn shutdown(&self) {
-        self.inner.state.mic_route.shutdown();
+        self.inner.mic_route.shutdown();
         self.set_hotkey_capture(true);
         self.cancel_recording();
         if let Ok(mut recorder) = self.inner.state.audio_recorder.lock() {

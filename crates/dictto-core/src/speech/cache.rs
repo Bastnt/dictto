@@ -2,7 +2,6 @@ use ring::digest::{Context, SHA256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek};
-use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 const LIMIT: usize = 6;
@@ -11,6 +10,7 @@ const PREFIX: &str = "dictto-tts-v1-";
 pub(crate) struct Cache {
     dir: PathBuf,
     verified: HashMap<String, (String, Fingerprint)>,
+    create_marker: fn(&Path) -> io::Result<File>,
 }
 
 #[derive(Debug)]
@@ -126,6 +126,7 @@ fn fingerprint(path: &Path) -> io::Result<Fingerprint> {
     })
 }
 
+// 32 and 33 are the Windows sharing and lock violations: another process holds the file.
 fn shared(error: &io::Error) -> bool {
     matches!(error.raw_os_error(), Some(32 | 33)) || error.kind() == io::ErrorKind::PermissionDenied
 }
@@ -144,11 +145,12 @@ fn owned_wav(name: &str) -> Option<&str> {
 }
 
 impl Cache {
-    pub(crate) fn new(dir: PathBuf) -> io::Result<Self> {
+    pub(crate) fn new(dir: PathBuf, create_marker: fn(&Path) -> io::Result<File>) -> io::Result<Self> {
         fs::create_dir_all(&dir)?;
         let mut cache = Self {
             dir: std::path::absolute(dir)?,
             verified: HashMap::new(),
+            create_marker,
         };
         let mut keep = HashSet::new();
         for entry in cache.entries()?.into_iter().rev() {
@@ -309,12 +311,7 @@ impl Cache {
         let target = self.wav(key);
         // If interrupted before replacement, startup can still match the old
         // WAV against its previous marker. The WAV itself keeps a stable path.
-        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-        File::options()
-            .write(true)
-            .create_new(true)
-            .attributes(FILE_ATTRIBUTE_HIDDEN)
-            .open(&marker)?;
+        (self.create_marker)(&marker)?;
         if let Err(e) = fs::rename(path, &target) {
             cleanup(&marker)?;
             return Err(e);
@@ -398,13 +395,13 @@ mod tests {
     #[test]
     fn six_result_lru_promotes_hits_and_updates_across_restart() {
         let dir = Temp::new();
-        let mut cache = Cache::new(dir.0.clone()).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
         for i in 1..=6 {
             cache.put_file(&key(i), &render(&dir.0, i as i16)).unwrap();
         }
         cache.get_path(&key(1)).unwrap().unwrap();
         drop(cache);
-        let mut cache = Cache::new(dir.0.clone()).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
         cache.put_file(&key(7), &render(&dir.0, 7)).unwrap();
         assert!(cache.get_path(&key(2)).unwrap().is_none());
         let path = cache.put_file(&key(3), &render(&dir.0, 33)).unwrap();
@@ -438,18 +435,26 @@ mod tests {
         }
         let stale = dir.0.join("dictto-tts-render-0-42.partial");
         fs::write(&stale, b"discard").unwrap();
-        let mut cache = Cache::new(dir.0.clone()).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
         assert!(!stale.exists());
         let path = cache.put_file(&key(1), &render(&dir.0, 1)).unwrap();
         let old_tmp = path.with_extension("wav.tmp");
         fs::write(&old_tmp, b"discard").unwrap();
         fs::write(&path, b"broken").unwrap();
-        let mut cache = Cache::new(dir.0.clone()).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
         assert!(!path.exists() && !old_tmp.exists());
         assert!(cache.get_path(&key(1)).unwrap().is_none());
         let path = cache.put_file(&key(2), &render(&dir.0, 2)).unwrap();
         let other = render(&dir.0, 55);
-        fs::copy(other, path).unwrap();
+        fs::copy(other, &path).unwrap();
+        // Coarse Linux timestamps can give a same-size copy made within one tick the
+        // verified fingerprint; an editor's copy lands later than that.
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
         assert!(cache.get_path(&key(2)).unwrap().is_none());
         let path = cache.put_file(&key(3), &render(&dir.0, 3)).unwrap();
         fs::remove_file(path).unwrap();
@@ -463,7 +468,7 @@ mod tests {
     fn rejects_invalid_keys_external_inputs_and_truncated_samples() {
         let dir = Temp::new();
         let outside = Temp::new();
-        let mut cache = Cache::new(dir.0.clone()).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
         let file = render(&outside.0, 1);
         assert!(cache.put_file(&key(1), &file).is_err());
         assert!(file.exists());
@@ -482,7 +487,7 @@ mod tests {
     #[test]
     fn stable_path_survives_touch_replacement_and_interrupted_publish() {
         let dir = Temp::new();
-        let mut cache = Cache::new(dir.0.clone()).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
         let key1 = key(1);
         let path = cache.put_file(&key1, &render(&dir.0, 1)).unwrap();
         cache.put_file(&key(2), &render(&dir.0, 2)).unwrap();
@@ -497,7 +502,7 @@ mod tests {
             )
             .unwrap();
         File::create_new(&incomplete).unwrap();
-        let mut cache = Cache::new(dir.0.clone()).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
         assert!(!stale.exists() && !incomplete.exists());
         assert_eq!(cache.get_path(&key1).unwrap().unwrap(), path);
     }
@@ -507,10 +512,10 @@ mod tests {
     fn unchanged_cache_hit_needs_no_audio_read_and_locked_eviction_keeps_working() {
         use std::os::windows::fs::OpenOptionsExt;
         let dir = Temp::new();
-        let mut cache = Cache::new(dir.0.clone()).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
         let path = cache.put_file(&key(1), &render(&dir.0, 1)).unwrap();
         cache.put_file(&key(2), &render(&dir.0, 2)).unwrap();
-        let mut cache = Cache::new(dir.0.clone()).unwrap();
+        let mut cache = Cache::new(dir.0.clone(), super::super::create_marker).unwrap();
         let lock = File::options()
             .read(true)
             .share_mode(0)

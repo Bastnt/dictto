@@ -7,11 +7,15 @@ pub mod host;
 pub mod llm;
 pub mod pipeline;
 pub mod platform;
+#[cfg(feature = "speech")]
+pub mod speech;
 pub mod transcription;
 pub mod warmup;
 
 #[cfg(test)]
 mod endpoint_tests;
+#[cfg(test)]
+mod test_support;
 
 use std::sync::{Arc, Mutex};
 

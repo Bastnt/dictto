@@ -39,4 +39,13 @@ mod tests {
         assert_eq!(from_vk(0x88), None);
         assert_eq!(from_vk(0x1b), None);
     }
+
+    #[test]
+    fn modifier_keys_are_exactly_the_former_modifier_virtual_keys() {
+        // Speech shortcuts never swallow modifiers, so every modifier VK must map to a modifier key.
+        for vk in 0..=0xffu16 {
+            let modifier = matches!(from_vk(vk), Some(Key::Ctrl | Key::Alt | Key::Shift | Key::Super));
+            assert_eq!(modifier, matches!(vk, 0x10..=0x12 | 0x5b..=0x5c | 0xa0..=0xa5), "{vk:#x}");
+        }
+    }
 }

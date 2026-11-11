@@ -25,53 +25,40 @@ pub fn configure(value: keys::Chord) {
 }
 
 pub fn set_capture(active: bool) {
-    if let Some(hooks) = SPEECH.get() {
-        hooks.suspend(active);
-    }
+    #[cfg(feature = "speech")]
+    crate::speech::suspend(active);
     let mut tracker = tracker().lock().unwrap();
     send_transition(tracker.reset());
     tracker.suspended = active;
 }
 
 /// Feeds one key transition from the platform keyboard source. `source` is the platform
-/// key code: it tells left and right modifiers apart and is what speech chords bind to.
+/// key code: it tells left and right modifiers apart and is what chords track keys by.
 /// Unmapped keys (`key == None`) never affect the dictation chord but still reach speech.
 /// Returns true when the event must be swallowed.
 pub fn key_event(source: u16, key: Option<keys::Key>, down: bool) -> bool {
     if let Some(key) = key {
         send_transition(tracker().lock().unwrap().event_from(source, key, down));
     }
-    let Some(hooks) = SPEECH.get() else { return false };
-    let (message, swallow) = hooks.key_event(source, key, down);
-    if let Some(message) = message {
-        send_speech(message);
+    speech_key_event(source, key, down)
+}
+
+#[cfg(feature = "speech")]
+fn speech_key_event(source: u16, key: Option<keys::Key>, down: bool) -> bool {
+    let (action, swallow) = crate::speech::key_event(source, key, down);
+    if let Some(action) = action {
+        send_speech(crate::speech::session::Message::Action(action));
     }
     swallow
 }
 
-/// Opaque speech event routed through the dictation loop so it is ordered with key events.
-pub type SpeechMessage = Box<dyn std::any::Any + Send>;
-
-/// Speech shortcuts and sessions owned by the native app until speech moves into the core.
-/// While a session is active, dictation keys are ignored and bar actions go to speech.
-#[async_trait::async_trait]
-pub trait SpeechHooks: Send + Sync {
-    fn key_event(&self, source: u16, key: Option<keys::Key>, down: bool) -> (Option<SpeechMessage>, bool);
-    fn suspend(&self, active: bool);
-    fn active(&self) -> bool;
-    /// `can_start` is false while dictation records or transcribes.
-    async fn message(&self, app: &AppHandle, message: SpeechMessage, can_start: bool);
-    async fn bar(&self, app: &AppHandle, action: BarAction);
+#[cfg(not(feature = "speech"))]
+fn speech_key_event(_: u16, _: Option<keys::Key>, _: bool) -> bool {
+    false
 }
 
-static SPEECH: OnceLock<Box<dyn SpeechHooks>> = OnceLock::new();
-
-/// Must precede `start`; the first registration wins.
-pub fn set_speech_hooks(hooks: Box<dyn SpeechHooks>) {
-    let _ = SPEECH.set(hooks);
-}
-
-pub fn send_speech(message: SpeechMessage) {
+#[cfg(feature = "speech")]
+pub(crate) fn send_speech(message: crate::speech::session::Message) {
     if let Some(tx) = HOTKEY_TX.get() {
         let _ = tx.send(HotkeyEvent::Speech(message));
     }
@@ -80,7 +67,8 @@ pub fn send_speech(message: SpeechMessage) {
 type AsyncJoinHandle = tauri::async_runtime::JoinHandle<()>;
 
 enum HotkeyEvent {
-    Speech(SpeechMessage),
+    #[cfg(feature = "speech")]
+    Speech(crate::speech::session::Message),
     Pressed,
     Released,
 }
@@ -315,7 +303,8 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
             }
         }
 
-        let speech = SPEECH.get();
+        #[cfg(feature = "speech")]
+        let mut speech = crate::speech::session::Sessions::default();
         let sounds = &*sounds;
         let mut state = State::Idle;
         // Timer for tap/hold discrimination and double-tap window
@@ -349,20 +338,19 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                 hotkey_event = rx.recv() => {
                     let Some(event) = hotkey_event else { break };
 
-                    if let Some(speech) = speech {
-                        match event {
-                            HotkeyEvent::Speech(message) => {
-                                let can_start = matches!(state, State::Idle) && pending_pipelines == 0;
-                                speech.message(&app_handle, message, can_start).await;
-                                continue;
-                            }
-                            _ if speech.active() => continue,
-                            _ => {}
+                    #[cfg(feature = "speech")]
+                    match event {
+                        HotkeyEvent::Speech(message) => {
+                            let can_start = matches!(state, State::Idle) && pending_pipelines == 0;
+                            speech.message(&app_handle, message, can_start).await;
+                            continue;
                         }
+                        _ if speech.active() => continue,
+                        _ => {}
                     }
                     match (&state, event) {
-                        // Without speech hooks nothing sends speech messages.
-                        (_, HotkeyEvent::Speech(_)) => {}
+                        #[cfg(feature = "speech")]
+                        (_, HotkeyEvent::Speech(_)) => unreachable!(),
                         // --- IDLE ---
                         (State::Idle, HotkeyEvent::Pressed) => {
                             log::debug!("[hotkey] {} + Pressed → starting recording", state.name());
@@ -535,7 +523,8 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                 bar_event = bar_rx.recv() => {
                     let Some(action) = bar_event else { break };
 
-                    if let Some(speech) = speech.filter(|speech| speech.active()) {
+                    #[cfg(feature = "speech")]
+                    if speech.active() {
                         speech.bar(&app_handle, action).await;
                         continue;
                     }

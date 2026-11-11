@@ -1,16 +1,88 @@
+//! Speech synthesis shortcuts: read the selection aloud, repeat dictated speech, and
+//! record the clone sample. OS services are reached through `SpeechPlatform`.
+use crate::audio::DeviceSelection;
 use crate::host::{AppHandle, Manager};
-use dictto_core::audio::DeviceSelection;
-use dictto_core::keys::{Chord, Tracker};
-use dictto_core::transcription::{
-    openai_api::OpenAIWhisper, TranscriptionConfig, TranscriptionEngine,
-};
-use crate::SpeechState;
+use crate::keys::{Chord, Key, Tracker};
+use crate::transcription::{openai_api::OpenAIWhisper, TranscriptionConfig, TranscriptionEngine};
+use crate::CoreState;
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Mutex, OnceLock};
+use std::fs::File;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+pub mod api;
+mod cache;
+mod render;
+pub mod route;
+pub(crate) mod session;
+
+pub use render::Player;
+
+/// Returns the selected text, else the clipboard text; never writes the clipboard.
+pub trait SelectionReader: Send + Sync {
+    fn read(&self) -> Result<String, String>;
+}
+
+/// Routes one read to a virtual microphone that other applications capture.
+pub trait VirtualMic: Send + Sync {
+    /// Fails with a user-facing reason before any API call is made.
+    fn check_available(&self) -> Result<(), String>;
+    /// The route is restored when the returned player is dropped.
+    fn player(&self) -> Box<dyn Player + Send>;
+}
+
+pub struct SpeechPlatform {
+    /// Plays to the user's speakers.
+    pub player: Arc<dyn Player + Send>,
+    pub virtual_mic: Arc<dyn VirtualMic>,
+    pub selection: Arc<dyn SelectionReader>,
+    /// Creates a new cache marker file; Windows hides it from Explorer.
+    pub create_marker: fn(&Path) -> io::Result<File>,
+}
+
+/// Cache marker creator for platforms with no hidden-file attribute.
+pub fn create_marker(path: &Path) -> io::Result<File> {
+    File::create_new(path)
+}
+
+/// Speech state registered on the host next to `CoreState` by apps with speech.
+/// Derefs to `CoreState` so speech code reads shared fields through one handle; the
+/// `speech` field is named apart from `CoreState::platform` so the deref never hides it.
+pub struct SpeechState {
+    core: Arc<CoreState>,
+    pub speech: SpeechPlatform,
+    cache: Mutex<Option<cache::Cache>>,
+    pub audio_dir: PathBuf,
+    pub sample_path: PathBuf,
+}
+
+impl SpeechState {
+    pub fn new(core: Arc<CoreState>, data_dir: &Path, platform: SpeechPlatform) -> Result<Self, String> {
+        let audio_dir = std::path::absolute(data_dir.join("Speech Audio")).map_err(|e| e.to_string())?;
+        let cache = cache::Cache::new(audio_dir.clone(), platform.create_marker)
+            .map_err(|e| log::warn!("Could not open speech audio folder: {e}"))
+            .ok();
+        Ok(Self {
+            core,
+            speech: platform,
+            cache: Mutex::new(cache),
+            audio_dir,
+            sample_path: data_dir.join("voice-sample.wav"),
+        })
+    }
+}
+
+impl std::ops::Deref for SpeechState {
+    type Target = CoreState;
+    fn deref(&self) -> &CoreState {
+        &self.core
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Action {
+pub enum Action {
     SampleMic,
     SamplePlayback,
     Repeat,
@@ -18,7 +90,8 @@ pub(crate) enum Action {
     ReadVoice,
 }
 
-pub(crate) const BINDINGS: [(&str, Action); 5] = [
+/// Setting key of each speech shortcut.
+pub const BINDINGS: [(&str, Action); 5] = [
     ("tts_hotkey_sample_mic", Action::SampleMic),
     ("tts_hotkey_sample_loopback", Action::SamplePlayback),
     ("tts_hotkey_speech_to_speech", Action::Repeat),
@@ -38,7 +111,7 @@ fn shortcuts() -> &'static Mutex<Shortcuts> {
     SHORTCUTS.get_or_init(Default::default)
 }
 
-pub(crate) fn configure(mut bindings: Vec<(Action, Tracker)>) {
+pub fn configure(mut bindings: Vec<(Action, Tracker)>) {
     let mut current = shortcuts().lock().unwrap();
     for (_, tracker) in &mut bindings {
         tracker.suspended = current.suspended;
@@ -46,7 +119,8 @@ pub(crate) fn configure(mut bindings: Vec<(Action, Tracker)>) {
     current.bindings = bindings;
 }
 
-pub(crate) fn parse_bindings(
+/// Validates against the dictation shortcut too; `strict` rejects instead of skipping bad entries.
+pub fn parse_bindings(
     settings: &HashMap<String, String>,
     strict: bool,
 ) -> Result<Vec<(Action, Tracker)>, String> {
@@ -87,30 +161,31 @@ pub(crate) fn parse_bindings(
 }
 
 impl Shortcuts {
-    fn event(&mut self, vk: u16, down: bool) -> (Option<Action>, bool) {
+    fn event(&mut self, source: u16, key: Option<Key>, down: bool) -> (Option<Action>, bool) {
         let mut hit = None;
-        let key = dictto_windows::keymap::from_vk(vk);
         for (action, tracker) in &mut self.bindings {
-            let transition = key.and_then(|key| tracker.event_from(vk, key, down));
+            let transition = key.and_then(|key| tracker.event_from(source, key, down));
             if transition == Some(true) && hit.is_none() {
                 hit = Some(*action);
             }
         }
         // Keep the function key and its repeats out of the focused application's accelerators.
-        if hit.is_some() && !matches!(vk,0x10..=0x12|0x5b..=0x5c|0xa0..=0xa5) {
-            self.suppressed.insert(vk);
+        let modifier = matches!(key, Some(Key::Ctrl | Key::Alt | Key::Shift | Key::Super));
+        if hit.is_some() && !modifier {
+            self.suppressed.insert(source);
         }
         let suppress = if down {
-            self.suppressed.contains(&vk)
+            self.suppressed.contains(&source)
         } else {
-            self.suppressed.remove(&vk)
+            self.suppressed.remove(&source)
         };
         (hit, suppress)
     }
 }
 
-pub(crate) fn key_event(vk: u16, down: bool) -> (Option<Action>, bool) {
-    shortcuts().lock().unwrap().event(vk, down)
+/// Returns the action whose chord this event completes and whether to swallow the event.
+pub(crate) fn key_event(source: u16, key: Option<Key>, down: bool) -> (Option<Action>, bool) {
+    shortcuts().lock().unwrap().event(source, key, down)
 }
 
 pub(crate) fn suspend(active: bool) {
@@ -184,9 +259,9 @@ impl Action {
         let get = |key: &str| settings.get(key).map(String::as_str).unwrap_or("");
         let use_virtual_mic = get("tts_virtual_mic") == "true";
         if use_virtual_mic {
-            state.mic_route.check_available()?;
+            state.speech.virtual_mic.check_available()?;
         }
-        let key = dictto_core::db::keystore::get_api_key()
+        let key = crate::db::keystore::get_api_key()
             .map_err(|_| "Set your fleet API key in Settings.")?;
         let base = get("api_base_url");
         let languages: Vec<String> = serde_json::from_str(get("languages")).unwrap_or_default();
@@ -201,18 +276,21 @@ impl Action {
             whisper
                 .transcribe(&audio.ok_or("No recorded speech")?, &config)
                 .await
-                .map_err(|e| dictto_core::transcription::friendly_error(&e.to_string()))?
+                .map_err(|e| crate::transcription::friendly_error(&e.to_string()))?
                 .text
         } else {
-            tokio::task::spawn_blocking(selection_or_clipboard)
+            let selection = state.speech.selection.clone();
+            tokio::task::spawn_blocking(move || selection.read())
                 .await
                 .map_err(|_| "Could not read selected text")??
         };
         if text.trim().is_empty() {
             return Err("No text to speak.".into());
         }
-        let player = render::WindowsPlayer {
-            microphone: use_virtual_mic.then(|| virtual_mic::Player::new(state.mic_route.clone())),
+        let microphone = use_virtual_mic.then(|| state.speech.virtual_mic.player());
+        let player: &dyn Player = match &microphone {
+            Some(microphone) => &**microphone,
+            None => &*state.speech.player,
         };
         render::speak(
             &state,
@@ -221,13 +299,13 @@ impl Action {
             &text,
             config.language.as_deref().unwrap_or(""),
             sample.as_deref(),
-            &player,
+            player,
         )
         .await
     }
 }
 
-fn replace_sample(path: &std::path::Path, wav: &[u8]) -> Result<(), String> {
+fn replace_sample(path: &Path, wav: &[u8]) -> Result<(), String> {
     let reader = hound::WavReader::new(wav).map_err(|_| "Invalid sample recording")?;
     let rate = reader.spec().sample_rate;
     if reader.duration() < rate * 3 / 10 || reader.duration() > rate * 30 {
@@ -292,7 +370,8 @@ fn speech_chunks(mut text: &str) -> impl Iterator<Item = &str> {
     })
 }
 
-fn preferred_text(
+/// Helper for `SelectionReader` implementations; the clipboard is read only without a selection.
+pub fn preferred_text(
     selected: Option<String>,
     clipboard: impl FnOnce() -> Result<String, String>,
 ) -> Result<String, String> {
@@ -302,128 +381,42 @@ fn preferred_text(
         .unwrap_or_else(clipboard)
 }
 
-unsafe fn edit_selection(hwnd: windows::Win32::Foundation::HWND) -> Option<String> {
-    use windows::Win32::{
-        Foundation::*,
-        UI::{Controls::EM_GETSEL, WindowsAndMessaging::*},
-    };
-    let mut class = [0u16; 32];
-    let len = GetClassNameW(hwnd, &mut class);
-    if !String::from_utf16_lossy(&class[..len as usize]).eq_ignore_ascii_case("Edit")
-        || GetWindowLongW(hwnd, GWL_STYLE) & ES_PASSWORD as i32 != 0
-    {
-        return None;
-    }
-    let send = |msg, w, l| {
-        let mut result = 0;
-        (SendMessageTimeoutW(
-            hwnd,
-            msg,
-            WPARAM(w),
-            LPARAM(l),
-            SMTO_ABORTIFHUNG,
-            250,
-            Some(&mut result),
-        )
-        .0 != 0)
-            .then_some(result)
-    };
-    let mut start = 0u32;
-    let mut end = 0u32;
-    send(
-        EM_GETSEL,
-        (&raw mut start) as usize,
-        (&raw mut end) as isize,
-    )?;
-    if start >= end {
-        return None;
-    }
-    let len = send(WM_GETTEXTLENGTH, 0, 0)?;
-    if end as usize > len {
-        return None;
-    }
-    let mut buffer = Vec::new();
-    buffer.try_reserve_exact(len.checked_add(1)?).ok()?;
-    buffer.resize(len + 1, 0u16);
-    let copied = send(WM_GETTEXT, buffer.len(), buffer.as_mut_ptr() as isize)?;
-    if (end as usize) > copied {
-        return None;
-    }
-    Some(String::from_utf16_lossy(
-        &buffer[start as usize..end as usize],
-    ))
-}
-
-unsafe fn selection_from_element(
-    automation: &windows::Win32::UI::Accessibility::IUIAutomation,
-    mut element: windows::Win32::UI::Accessibility::IUIAutomationElement,
-) -> windows::core::Result<String> {
-    use windows::Win32::UI::Accessibility::*;
-    let walker = automation.ControlViewWalker()?;
-    loop {
-        if element.CurrentIsPassword()?.as_bool() {
-            break;
-        }
-        if let Ok(pattern) =
-            element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
-        {
-            if let Ok(ranges) = pattern.GetSelection() {
-                let mut text = Vec::new();
-                for i in 0..ranges.Length()? {
-                    text.push(ranges.GetElement(i)?.GetText(-1)?.to_string());
-                }
-                let text = text.join("\n");
-                if !text.trim().is_empty() {
-                    return Ok(text);
-                }
-            }
-        }
-        if let Ok(hwnd) = element.CurrentNativeWindowHandle() {
-            if let Some(text) = edit_selection(hwnd) {
-                return Ok(text);
-            }
-        }
-        let Ok(parent) = walker.GetParentElement(&element) else {
-            break;
-        };
-        element = parent;
-    }
-    Ok(String::new())
-}
-
-fn selection_or_clipboard() -> Result<String, String> {
-    use windows::Win32::System::Com::*;
-    use windows::Win32::UI::Accessibility::*;
-    let selection = unsafe {
-        let init = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let selection = (|| -> windows::core::Result<String> {
-            let automation: IUIAutomation =
-                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
-            selection_from_element(&automation, automation.GetFocusedElement()?)
-        })()
-        .ok();
-        if init.is_ok() {
-            CoUninitialize();
-        }
-        selection
-    };
-    preferred_text(selection, || {
-        arboard::Clipboard::new()
-            .and_then(|mut c| c.get_text())
-            .map_err(|_| "Select text or copy it to the clipboard first.".into())
-    })
-}
-
-pub(crate) mod cache;
-mod communications;
-mod playback;
-mod render;
-pub(crate) mod session;
-pub(crate) mod virtual_mic;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Unused;
+    #[async_trait::async_trait]
+    impl Player for Unused {
+        async fn chunk(&self, _: Vec<u8>) -> Result<(), String> {
+            unreachable!()
+        }
+        async fn file(&self, _: &Path) -> Result<(), String> {
+            unreachable!()
+        }
+    }
+    impl VirtualMic for Unused {
+        fn check_available(&self) -> Result<(), String> {
+            unreachable!()
+        }
+        fn player(&self) -> Box<dyn Player + Send> {
+            unreachable!()
+        }
+    }
+    impl SelectionReader for Unused {
+        fn read(&self) -> Result<String, String> {
+            unreachable!()
+        }
+    }
+    pub(super) fn platform() -> SpeechPlatform {
+        SpeechPlatform {
+            player: Arc::new(Unused),
+            virtual_mic: Arc::new(Unused),
+            selection: Arc::new(Unused),
+            create_marker,
+        }
+    }
+
     #[test]
     fn split_long_text_at_unicode_boundaries_without_losing_content() {
         let text = format!("{} {}. {}", "é".repeat(3900), "end", "語".repeat(8300));
@@ -445,60 +438,6 @@ mod tests {
                 "clipboard"
             );
         }
-    }
-    #[test]
-    fn windows_edit_selection_is_read_without_copying() {
-        use windows::core::w;
-        use windows::Win32::{
-            Foundation::*,
-            System::Com::*,
-            UI::{Accessibility::*, Controls::EM_SETSEL, WindowsAndMessaging::*},
-        };
-        let (ready, hwnd_rx) = std::sync::mpsc::channel();
-        let window = std::thread::spawn(move || unsafe {
-            let hwnd = CreateWindowExW(
-                WS_EX_NOACTIVATE,
-                w!("EDIT"),
-                w!("one two three"),
-                WS_POPUP,
-                0,
-                0,
-                180,
-                40,
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-            SendMessageW(hwnd, EM_SETSEL, Some(WPARAM(4)), Some(LPARAM(7)));
-            ready.send(hwnd.0 as usize).unwrap();
-            let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                if msg.message == WM_APP {
-                    break;
-                }
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-            let _ = DestroyWindow(hwnd);
-        });
-        let hwnd = HWND(hwnd_rx.recv().unwrap() as _);
-        let result = unsafe {
-            let init = CoInitializeEx(None, COINIT_MULTITHREADED);
-            let result = (|| -> windows::core::Result<String> {
-                let automation: IUIAutomation =
-                    CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
-                selection_from_element(&automation, automation.ElementFromHandle(hwnd)?)
-            })();
-            if init.is_ok() {
-                CoUninitialize();
-            }
-            PostMessageW(Some(hwnd), WM_APP, WPARAM(0), LPARAM(0)).unwrap();
-            result
-        };
-        window.join().unwrap();
-        assert_eq!(result.unwrap(), "two");
     }
     #[test]
     fn failed_sample_preserves_previous_file() {
@@ -533,13 +472,44 @@ mod tests {
             bindings: parse_bindings(&settings, true).unwrap(),
             ..Default::default()
         };
-        assert_eq!(chords.event(0xa2, true), (None, false));
-        assert_eq!(chords.event(0xa0, true), (None, false));
-        assert_eq!(chords.event(0x78, true), (Some(Action::ReadClone), true));
-        assert_eq!(chords.event(0x78, true), (None, true));
-        assert_eq!(chords.event(0xa2, false), (None, false));
-        assert_eq!(chords.event(0x78, false), (None, true));
-        assert_eq!(chords.event(0x78, true), (None, false));
+        let (ctrl, shift, f9) = (Some(Key::Ctrl), Some(Key::Shift), Some(Key::F(9)));
+        assert_eq!(chords.event(0xa2, ctrl, true), (None, false));
+        assert_eq!(chords.event(0xa0, shift, true), (None, false));
+        assert_eq!(chords.event(0x78, f9, true), (Some(Action::ReadClone), true));
+        assert_eq!(chords.event(0x78, f9, true), (None, true));
+        assert_eq!(chords.event(0xa2, ctrl, false), (None, false));
+        assert_eq!(chords.event(0x78, f9, false), (None, true));
+        assert_eq!(chords.event(0x78, f9, true), (None, false));
+    }
+
+    #[test]
+    fn modifier_completing_a_chord_and_unmapped_keys_reach_the_focused_app() {
+        let settings = HashMap::from([
+            ("hotkey".into(), "F8".into()),
+            ("tts_hotkey_read_voice".into(), "Ctrl+Alt".into()),
+        ]);
+        let mut chords = Shortcuts {
+            bindings: parse_bindings(&settings, true).unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(chords.event(0xa2, Some(Key::Ctrl), true), (None, false));
+        assert_eq!(chords.event(0x1b, None, true), (None, false));
+        assert_eq!(chords.event(0xa4, Some(Key::Alt), true), (Some(Action::ReadVoice), false));
+        assert_eq!(chords.event(0xa4, Some(Key::Alt), false), (None, false));
+        assert_eq!(chords.event(0x1b, None, false), (None, false));
+    }
+
+    #[test]
+    fn suspended_shortcuts_neither_fire_nor_swallow() {
+        let settings = HashMap::from([("tts_hotkey_read_clone".into(), "F9".into())]);
+        let mut chords = Shortcuts {
+            bindings: parse_bindings(&settings, true).unwrap(),
+            ..Default::default()
+        };
+        for (_, tracker) in &mut chords.bindings {
+            tracker.suspended = true;
+        }
+        assert_eq!(chords.event(0x78, Some(Key::F(9)), true), (None, false));
     }
 
     #[test]

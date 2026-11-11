@@ -7,6 +7,8 @@ pub mod keyboard;
 pub mod keymap;
 pub mod recorder;
 pub mod sound;
+#[cfg(feature = "speech")]
+pub mod speech;
 
 pub use dictto_core::audio::MicrophoneInfo;
 pub use injector::WindowsInjector;

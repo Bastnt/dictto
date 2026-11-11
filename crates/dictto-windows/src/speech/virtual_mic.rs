@@ -1,4 +1,5 @@
-use super::communications::{self, Defaults, WindowsDefaults};
+use super::communications::{self, WindowsDefaults};
+use dictto_core::speech::route::{self, Defaults};
 use super::playback;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -20,12 +21,12 @@ struct State {
     active: Option<Active>,
 }
 
-pub(crate) struct Manager {
+pub struct Manager {
     journal: Result<PathBuf, String>,
     state: Mutex<State>,
 }
 impl Manager {
-    pub(crate) fn new(data_dir: &Path) -> Self {
+    pub fn new(data_dir: &Path) -> Self {
         let mut session = 0;
         let journal = unsafe {
             windows::Win32::System::RemoteDesktop::ProcessIdToSessionId(
@@ -43,14 +44,14 @@ impl Manager {
     fn journal(&self) -> Result<&Path, String> {
         self.journal.as_deref().map_err(Clone::clone)
     }
-    pub(crate) fn recover(&self) -> Result<(), String> {
+    pub fn recover(&self) -> Result<(), String> {
         let state = self.state.lock().unwrap();
         if state.active.is_some() {
             return Ok(());
         }
-        communications::recover(self.journal()?, &WindowsDefaults)
+        route::recover(self.journal()?, &WindowsDefaults)
     }
-    pub(crate) fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+    pub fn set_enabled(&self, enabled: bool) -> Result<(), String> {
         self.state.lock().unwrap().enabled = enabled;
         if enabled {
             Ok(())
@@ -89,7 +90,7 @@ impl Manager {
         if !state.enabled {
             return Err("Virtual microphone routing was turned off.".into());
         }
-        let target = communications::acquire(self.journal()?, &WindowsDefaults)?;
+        let target = route::acquire(self.journal()?, &WindowsDefaults)?;
         state.generation += 1;
         let token = state.generation;
         state.active = Some(Active {
@@ -127,9 +128,9 @@ impl Manager {
             return Ok(());
         }
         state.active = None;
-        communications::recover(self.journal()?, &WindowsDefaults)
+        route::recover(self.journal()?, &WindowsDefaults)
     }
-    pub(crate) fn session_changed(&self, suspended: bool) -> Result<(), String> {
+    pub fn session_changed(&self, suspended: bool) -> Result<(), String> {
         self.state.lock().unwrap().suspended = suspended;
         if suspended {
             self.end(None, false)
@@ -137,7 +138,7 @@ impl Manager {
             self.recover()
         }
     }
-    pub(crate) fn shutdown(&self) {
+    pub fn shutdown(&self) {
         if let Err(error) = self.end(None, true) {
             log::error!("Communications microphone recovery pending: {error}");
         }

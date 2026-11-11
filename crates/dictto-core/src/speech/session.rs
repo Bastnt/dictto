@@ -1,51 +1,40 @@
 use super::Action;
+use crate::dictation::{emit_state, send_speech, BarAction};
 use crate::host::{self as tauri, AppHandle, Emitter, Manager};
-use dictto_core::dictation::{emit_state, send_speech, BarAction, SpeechHooks, SpeechMessage};
-use dictto_core::keys::Key;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 
 type AsyncJoinHandle = tauri::async_runtime::JoinHandle<()>;
 
-enum Message {
+/// Speech event routed through the dictation loop so it is ordered with key events.
+pub(crate) enum Message {
     Action(Action),
     Limit(u64),
     Done(u64, Result<(), String>),
 }
 
-/// Speech shortcuts and sessions plugged into the core dictation loop. The loop calls
-/// `message`, `bar` and `active` one at a time, so a session taken out across an await
-/// is never observed missing.
+/// Speech sessions driven by the dictation loop. While one is active, dictation keys
+/// are ignored and bar actions go to speech.
 #[derive(Default)]
-pub(crate) struct Hooks {
-    session: Mutex<Option<SpeechSession>>,
-    generation: AtomicU64,
+pub(crate) struct Sessions {
+    session: Option<SpeechSession>,
+    generation: u64,
 }
 
-#[async_trait::async_trait]
-impl SpeechHooks for Hooks {
-    fn key_event(&self, source: u16, _key: Option<Key>, down: bool) -> (Option<SpeechMessage>, bool) {
-        let (action, swallow) = super::key_event(source, down);
-        (action.map(|action| Box::new(Message::Action(action)) as SpeechMessage), swallow)
+impl Sessions {
+    pub(crate) fn active(&self) -> bool {
+        self.session.is_some()
     }
-    fn suspend(&self, active: bool) {
-        super::suspend(active);
-    }
-    fn active(&self) -> bool {
-        self.session.lock().unwrap().is_some()
-    }
-    async fn message(&self, app: &AppHandle, message: SpeechMessage, can_start: bool) {
-        let Ok(message) = message.downcast::<Message>() else { return };
-        let mut speech = self.session.lock().unwrap().take();
-        match *message {
+    /// `can_start` is false while dictation records or transcribes.
+    pub(crate) async fn message(&mut self, app: &AppHandle, message: Message, can_start: bool) {
+        let mut speech = self.session.take();
+        match message {
             Message::Action(action) => {
                 if let Some(session) = speech.take() {
                     if session.action == action {
                         speech = session.stop(app, false).await;
                     } else { speech = Some(session); }
                 } else if can_start {
-                    let id = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-                    speech = SpeechSession::start(action, id, app);
+                    self.generation += 1;
+                    speech = SpeechSession::start(action, self.generation, app);
                 }
             }
             Message::Limit(id) => {
@@ -60,17 +49,15 @@ impl SpeechHooks for Hooks {
                 }
             }
         }
-        *self.session.lock().unwrap() = speech;
+        self.session = speech;
     }
-    async fn bar(&self, app: &AppHandle, action: BarAction) {
-        let session = self.session.lock().unwrap().take();
-        let Some(session) = session else { return };
-        let speech = match action {
+    pub(crate) async fn bar(&mut self, app: &AppHandle, action: BarAction) {
+        let Some(session) = self.session.take() else { return };
+        self.session = match action {
             BarAction::Cancel => session.stop(app, true).await,
             BarAction::Stop => session.stop(app, false).await,
             BarAction::Start => Some(session),
         };
-        *self.session.lock().unwrap() = speech;
     }
 }
 
@@ -107,7 +94,7 @@ impl SpeechSession {
         emit_state(app, "recording", Some("continuous"));
         let task = tauri::async_runtime::spawn(async move {
             tokio::time::sleep(duration).await;
-            send_speech(Box::new(Message::Limit(id)));
+            send_speech(Message::Limit(id));
         });
         Some(Self {
             action,
@@ -126,7 +113,7 @@ impl SpeechSession {
         let app = app.clone();
         let task = tauri::async_runtime::spawn(async move {
             let result = action.run(app, audio).await;
-            send_speech(Box::new(Message::Done(id, result)));
+            send_speech(Message::Done(id, result));
         });
         Self {
             action,
@@ -140,7 +127,7 @@ impl SpeechSession {
         let _ = self.task.await;
         if self.recording {
             let result = app
-                .state::<dictto_core::CoreState>()
+                .state::<crate::CoreState>()
                 .audio_recorder
                 .lock()
                 .unwrap()

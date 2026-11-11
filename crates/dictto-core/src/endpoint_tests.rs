@@ -218,22 +218,6 @@ async fn transcription_does_not_retry_unauthorized_requests() {
     assert_eq!(requests.len(), 1);
 }
 
-struct NoRecorder;
-impl super::platform::Recorder for NoRecorder {
-    fn set_app_handle(&mut self, _: super::host::AppHandle) {}
-    fn start(&mut self, _: super::audio::DeviceSelection) -> Result<(), super::audio::AudioError> { unreachable!() }
-    fn stop(&mut self) -> Result<Vec<u8>, super::audio::AudioError> { unreachable!() }
-    fn cancel(&mut self) {}
-    fn is_recording(&self) -> bool { false }
-}
-struct NoSounds;
-impl super::platform::Sounds for NoSounds {
-    fn play(&self, _: super::platform::Sound) {}
-}
-struct NoDevices;
-impl super::platform::Devices for NoDevices {
-    fn list_microphones(&self) -> Result<Vec<super::audio::MicrophoneInfo>, super::audio::AudioError> { Ok(vec![]) }
-}
 struct RecordingInjector(std::sync::Mutex<Vec<(String, u64)>>);
 #[async_trait::async_trait]
 impl super::platform::TextInjector for RecordingInjector {
@@ -253,18 +237,9 @@ async fn pipeline_uses_platform_injector() {
     db.set_setting("cleanup_enabled", "false").unwrap();
     db.set_setting("paste_delay_ms", "7").unwrap();
     let injector = std::sync::Arc::new(RecordingInjector(Default::default()));
-    let state = std::sync::Arc::new(super::CoreState {
-        platform: super::platform::Platform {
-            injector: injector.clone(),
-            sounds: std::sync::Arc::new(NoSounds),
-            devices: std::sync::Arc::new(NoDevices),
-        },
-        audio_recorder: std::sync::Mutex::new(Box::new(NoRecorder)),
-        db: std::sync::Mutex::new(db),
-        http_client: reqwest::Client::new(),
-        device_monitor: std::sync::Arc::new(super::audio::DeviceMonitorState::new()),
-        device_monitor_shutdown: std::sync::Mutex::new(None),
-    });
+    let mut state = super::test_support::core_state(db);
+    state.platform.injector = injector.clone();
+    let state = std::sync::Arc::new(state);
     let app = super::host::AppHandle::new(&state, std::sync::Arc::new(|_: &str, _: serde_json::Value| {}));
     let recording = super::pipeline::RecordedAudio { data: b"wav".to_vec(), released_at: std::time::Instant::now() };
     super::pipeline::run_pipeline_with_key(&app, &recording, "test-key".into()).await.unwrap();

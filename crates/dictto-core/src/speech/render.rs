@@ -1,5 +1,5 @@
-use crate::speech_api::{self, SpeechModel, SpeechRequest};
-use crate::SpeechState;
+use super::api::{self as speech_api, SpeechModel, SpeechRequest};
+use super::SpeechState;
 use async_trait::async_trait;
 use ring::digest::{Context, SHA256};
 use std::collections::HashMap;
@@ -8,43 +8,16 @@ use std::io::{self, BufWriter};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Plays synthesized speech. `chunk` receives each WAV as it arrives unless
+/// `requires_complete_audio`, in which case only the finished file is played.
 #[async_trait]
-pub(super) trait Player: Sync {
+pub trait Player: Sync {
     fn requires_complete_audio(&self) -> bool {
         false
     }
 
     async fn chunk(&self, audio: Vec<u8>) -> Result<(), String>;
     async fn file(&self, path: &Path) -> Result<(), String>;
-}
-
-pub(super) struct WindowsPlayer {
-    pub(super) microphone: Option<super::virtual_mic::Player>,
-}
-
-#[async_trait]
-impl Player for WindowsPlayer {
-    fn requires_complete_audio(&self) -> bool {
-        self.microphone.is_some()
-    }
-
-    async fn chunk(&self, audio: Vec<u8>) -> Result<(), String> {
-        super::playback::play(audio).await
-    }
-    async fn file(&self, path: &Path) -> Result<(), String> {
-        if let Some(mic) = &self.microphone {
-            let result = mic
-                .play(hound::WavReader::open(path).map_err(|e| e.to_string())?)
-                .await;
-            return match (result, mic.finish()) {
-                (Err(error), Err(restore)) => {
-                    Err(format!("{error} Microphone restoration pending: {restore}"))
-                }
-                (result, restore) => result.and(restore),
-            };
-        }
-        super::playback::play_file(path).await
-    }
 }
 
 fn digest(parts: &[&[u8]]) -> String {
@@ -156,10 +129,10 @@ fn with_cache<T>(
     state: &SpeechState,
     op: impl FnOnce(&mut super::cache::Cache) -> io::Result<T>,
 ) -> Result<T, String> {
-    let mut slot = state.speech_cache.lock().map_err(|e| e.to_string())?;
-    if slot.is_none() || !state.speech_audio_dir.is_dir() {
+    let mut slot = state.cache.lock().map_err(|e| e.to_string())?;
+    if slot.is_none() || !state.audio_dir.is_dir() {
         *slot = Some(
-            super::cache::Cache::new(state.speech_audio_dir.clone())
+            super::cache::Cache::new(state.audio_dir.clone(), state.speech.create_marker)
                 .map_err(|e| format!("Cannot open Speech Audio: {e}"))?,
         );
     }
@@ -173,7 +146,7 @@ pub(super) async fn speak(
     text: &str,
     language: &str,
     sample: Option<&[u8]>,
-    player: &impl Player,
+    player: &(impl Player + ?Sized),
 ) -> Result<(), String> {
     let base = settings
         .get("api_base_url")
@@ -212,7 +185,7 @@ pub(super) async fn speak(
     let mut chunks = super::speech_chunks(text);
     let first = chunks.next().ok_or("No text to speak.")?;
     let mut audio = plan.chunk(state, base, key, first).await?;
-    let mut render = PendingWav::new(&state.speech_audio_dir, &audio)?;
+    let mut render = PendingWav::new(&state.audio_dir, &audio)?;
     let complete_audio = player.requires_complete_audio();
     for next in chunks {
         render.append(&audio)?;
@@ -348,21 +321,11 @@ mod tests {
     }
 
     fn state(directory: &Path) -> SpeechState {
-        let dir = directory.join("Speech Audio");
-        SpeechState {
-            core: Arc::new(dictto_core::CoreState {
-                platform: dictto_windows::platform(),
-                audio_recorder: Mutex::new(Box::new(dictto_windows::WindowsRecorder::new())),
-                db: Mutex::new(dictto_core::db::Database::new(directory.into()).unwrap()),
-                http_client: reqwest::Client::new(),
-                device_monitor: Arc::new(dictto_core::audio::DeviceMonitorState::new()),
-                device_monitor_shutdown: Mutex::new(None),
-            }),
-            mic_route: Arc::new(super::super::virtual_mic::Manager::new(directory)),
-            sample_path: directory.join("voice-sample.wav"),
-            speech_cache: Mutex::new(Some(super::super::cache::Cache::new(dir.clone()).unwrap())),
-            speech_audio_dir: dir,
-        }
+        let core = crate::test_support::core_state(crate::db::Database::new(directory.into()).unwrap());
+        let state =
+            SpeechState::new(Arc::new(core), directory, super::super::tests::platform()).unwrap();
+        assert!(state.cache.lock().unwrap().is_some());
+        state
     }
 
     struct Probe {
@@ -588,7 +551,7 @@ mod tests {
             tokio::select! {r=&mut running=>panic!("unexpected completion {r:?}"),_=player.started.notified()=>{}}
         }
         assert_eq!(
-            std::fs::read_dir(&state.speech_audio_dir).unwrap().count(),
+            std::fs::read_dir(&state.audio_dir).unwrap().count(),
             0
         );
         server.abort();
@@ -625,7 +588,7 @@ mod tests {
         assert!(player.chunks.lock().unwrap().is_empty());
         assert!(player.files.lock().unwrap().is_empty());
         assert_eq!(
-            std::fs::read_dir(&state.speech_audio_dir).unwrap().count(),
+            std::fs::read_dir(&state.audio_dir).unwrap().count(),
             0
         );
         server.abort();

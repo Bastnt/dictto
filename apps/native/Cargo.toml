@@ -10,29 +10,17 @@ default = []
 tauri-host = []
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.13", features = ["json", "multipart"] }
-hound = "3.5"
-ring = "0.17"
-arboard = "3"
-dictto-core = { path = "../../crates/dictto-core" }
-dictto-windows = { path = "../../crates/dictto-windows" }
-async-trait = "0.1"
+dictto-core = { path = "../../crates/dictto-core", features = ["speech"] }
+dictto-windows = { path = "../../crates/dictto-windows", features = ["speech"] }
 thiserror = "2"
 log = "0.4"
 winreg = "0.55"
-windows-core = "0.62"
 windows = { version = "0.62", features = [
-  "Win32_Foundation", "Win32_UI_WindowsAndMessaging",
-  "Win32_UI_Input_KeyboardAndMouse", "Win32_Media_Audio",
-  "Win32_System_Com", "Win32_System_Com_StructuredStorage",
-  "Win32_Devices_Properties", "Win32_UI_Shell_PropertiesSystem",
-  "Win32_System_Variant", "Win32_Security", "Win32_System_Threading",
+  "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse",
   "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_Shell",
-  "Win32_Devices_DeviceAndDriverInstallation", "Win32_System_IO", "Win32_System_RemoteDesktop",
-  "Win32_UI_Accessibility", "Win32_UI_Controls", "Win32_Graphics_Dwm",
+  "Win32_System_RemoteDesktop", "Win32_UI_Controls", "Win32_Graphics_Dwm",
 ] }
 
 [build-dependencies]

@@ -759,6 +759,7 @@ dependencies = [
  "keyring",
  "log",
  "reqwest",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",
@@ -771,20 +772,13 @@ dependencies = [
 name = "dictto-native"
 version = "0.2.0"
 dependencies = [
- "arboard",
- "async-trait",
  "dictto-core",
  "dictto-windows",
- "hound",
  "log",
  "reqwest",
- "ring",
- "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tokio",
  "windows 0.62.2",
- "windows-core 0.62.2",
  "winreg",
  "winresource",
 ]
