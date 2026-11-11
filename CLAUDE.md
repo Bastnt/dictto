@@ -8,9 +8,9 @@ This file provides guidance to Claude Code when working with code in this reposi
 pnpm dev              # Start Tauri dev mode (frontend + backend hot-reload)
 pnpm build            # Production build
 
-# Rust-only checks (from apps/desktop/src-tauri/):
-cargo check           # Fast compile check without running
-cargo build           # Full build
+# Rust-only checks (workspace root):
+cargo check --workspace
+cargo test --workspace
 ```
 
 ## Architecture
@@ -31,31 +31,29 @@ Triggered by `Ctrl+Win` (push-to-talk):
 4. Clean text via OpenAI GPT
 5. Inject text via clipboard (Ctrl+V)
 
-### Backend Module Structure
+### Workspace Structure
 
 ```
-src-tauri/src/
-├── lib.rs                    # App setup, AppState
-├── tray.rs                   # System tray menu
-├── commands/                 # Tauri IPC command handlers
-│   ├── audio.rs              # Recording controls
-│   ├── transcription.rs      # Transcription
-│   ├── llm.rs                # Text processing
-│   ├── settings.rs           # Settings management
-│   └── window.rs             # Window management
-└── services/                 # Business logic
-    ├── audio/recorder.rs     # CPAL capture
-    ├── transcription/        # TranscriptionEngine trait + impls
-    ├── llm/                  # LLMProcessor trait + impls
-    ├── injector/             # Text injection (enigo + arboard)
-    ├── hotkey/mod.rs         # Global shortcut (WH_KEYBOARD_LL)
-    ├── pipeline.rs           # Full recording->paste orchestrator
-    ├── sound/mod.rs          # UI sounds
-    └── db/                   # SQLite + keyring
+crates/
+├── dictto-core/src/          # Platform-neutral logic, no OS or UI dependency
+│   ├── runtime.rs            # Runtime: settings, start/shutdown, events through a sink
+│   ├── platform.rs           # Traits the OS implements: Recorder, TextInjector, Sounds, Devices, Services
+│   ├── host.rs               # AppHandle/Emitter/async_runtime (event sink, multi-state)
+│   ├── dictation/            # Push-to-talk state machine (fed by key_event)
+│   ├── pipeline.rs           # Recording -> transcribe -> clean -> paste
+│   ├── transcription/, llm/  # TranscriptionEngine, LLMProcessor + OpenAI impls
+│   ├── audio/, keys.rs, db/  # Device monitor state, chords, SQLite + keyring
+│   └── speech/               # Feature `speech` (native only): TTS, cache, mic route
+└── dictto-windows/src/       # Windows impls: recorder, injector, sounds, keyboard hook,
+                              # device monitor, autostart, instance guard, speech/ (WinMM, VB-CABLE)
+apps/
+├── desktop/src-tauri/src/    # Tauri variant (no speech): lib.rs setup, tray, commands/, cursor_passthrough
+└── native/src/               # Win32 variant: ui*.rs, overlay.rs, main.rs
 ```
 
 ### Key Traits
 
+- `Platform` — OS services the core calls (`dictto_windows::platform()`); a new OS supplies its own
 - `TranscriptionEngine` — async trait for speech-to-text engines
 - `LLMProcessor` — async trait for text cleanup processors
 
@@ -73,11 +71,11 @@ Both use `async-trait`. Import the trait explicitly when using in commands.
 - **Package manager**: pnpm (monorepo workspaces)
 - **Error handling**: `thiserror` derive macros with `Serialize` for Tauri IPC
 - **Async**: `tokio` runtime, `async-trait` for trait definitions
-- **State**: `Mutex<T>` in `AppState`, accessed via `State<AppState>` in commands
+- **State**: `dictto_core::Runtime` (managed Tauri state), accessed via `State<Runtime>` in commands
 
 ## Tauri v2 Notes
 
-- Hotkey uses `WH_KEYBOARD_LL` via Microsoft `windows` crate
+- Hotkey uses `WH_KEYBOARD_LL` via Microsoft `windows` crate (`dictto-windows`)
 - Clipboard permissions: `clipboard-manager:allow-read-text` / `allow-write-text`
-- Commands must be registered in `generate_handler![]` in `lib.rs`
+- Commands are thin wrappers over core functions, registered in `generate_handler![]` in `lib.rs`
 - Use `@tauri-apps/api/core` for `invoke` (not `@tauri-apps/api/tauri`)

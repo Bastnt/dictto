@@ -303,7 +303,7 @@ impl App {
             }
             (624, BN_CLICKED) => {
                 use std::os::windows::ffi::OsStrExt;
-                let folder = self.runtime.speech_audio_dir();
+                let folder = self.runtime.speech_audio_dir().unwrap_or_default();
                 if let Err(error) = std::fs::create_dir_all(&folder) {
                     self.status = format!("Could not create the audio folder: {error}");
                 } else {

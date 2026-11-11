@@ -32,10 +32,19 @@ pub trait VirtualMic: Send + Sync {
     fn player(&self) -> Box<dyn Player + Send>;
 }
 
+/// Lifecycle of the virtual microphone route, driven by the runtime.
+pub trait MicRouteControl: Send + Sync {
+    fn recover(&self) -> Result<(), String>;
+    fn set_enabled(&self, enabled: bool) -> Result<(), String>;
+    fn session_changed(&self, suspended: bool) -> Result<(), String>;
+    fn shutdown(&self);
+}
+
 pub struct SpeechPlatform {
     /// Plays to the user's speakers.
     pub player: Arc<dyn Player + Send>,
     pub virtual_mic: Arc<dyn VirtualMic>,
+    pub mic_route: Arc<dyn MicRouteControl>,
     pub selection: Arc<dyn SelectionReader>,
     pub cache_files: cache::CacheFiles,
 }
@@ -375,7 +384,7 @@ pub fn preferred_text(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     struct Unused;
@@ -396,15 +405,28 @@ mod tests {
             unreachable!()
         }
     }
+    impl MicRouteControl for Unused {
+        fn recover(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_enabled(&self, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn session_changed(&self, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn shutdown(&self) {}
+    }
     impl SelectionReader for Unused {
         fn read(&self) -> Result<String, String> {
             unreachable!()
         }
     }
-    pub(super) fn platform() -> SpeechPlatform {
+    pub(crate) fn platform() -> SpeechPlatform {
         SpeechPlatform {
             player: Arc::new(Unused),
             virtual_mic: Arc::new(Unused),
+            mic_route: Arc::new(Unused),
             selection: Arc::new(Unused),
             cache_files: cache::CacheFiles::default(),
         }

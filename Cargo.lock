@@ -730,12 +730,9 @@ dependencies = [
 name = "dictto"
 version = "0.2.0"
 dependencies = [
- "async-trait",
  "dictto-core",
  "dictto-windows",
- "hound",
  "log",
- "reqwest",
  "serde",
  "serde_json",
  "tauri",
@@ -744,10 +741,8 @@ dependencies = [
  "tauri-plugin-log",
  "tauri-plugin-process",
  "tauri-plugin-updater",
- "thiserror 2.0.18",
  "tokio",
  "windows 0.62.2",
- "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -775,9 +770,7 @@ dependencies = [
  "dictto-core",
  "dictto-windows",
  "log",
- "reqwest",
  "serde_json",
- "thiserror 2.0.18",
  "windows 0.62.2",
  "winreg",
  "winresource",

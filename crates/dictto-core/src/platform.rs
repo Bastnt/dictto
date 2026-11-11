@@ -1,4 +1,4 @@
-use crate::audio::{AudioError, DeviceSelection, MicrophoneInfo};
+use crate::audio::{AudioError, DeviceMonitorState, DeviceSelection, MicrophoneInfo};
 use std::sync::Arc;
 use crate::host::AppHandle;
 
@@ -37,10 +37,26 @@ pub trait Devices: Send + Sync {
     fn list_microphones(&self) -> Result<Vec<MicrophoneInfo>, AudioError>;
 }
 
-/// OS services the core reaches through traits. The recorder stays in
-/// `CoreState::audio_recorder` because hosts swap it at shutdown.
+/// Session-level OS services the runtime starts and configures.
+pub trait Services: Send + Sync {
+    fn set_autostart(&self, enabled: bool) -> Result<(), String>;
+    /// Starts feeding key events to `dictation::key_event`. Must fail without side
+    /// effects so that a later retry can succeed.
+    fn install_input(&self) -> Result<(), String>;
+    /// Sending on, or dropping, the returned sender stops the monitor.
+    fn spawn_device_monitor(
+        &self,
+        state: Arc<DeviceMonitorState>,
+        app: AppHandle,
+    ) -> std::sync::mpsc::Sender<()>;
+}
+
+/// OS services the core reaches through traits.
 pub struct Platform {
     pub injector: Arc<dyn TextInjector>,
     pub sounds: Arc<dyn Sounds>,
     pub devices: Arc<dyn Devices>,
+    pub services: Arc<dyn Services>,
+    /// The runtime builds the recorder, and a fresh one at shutdown to release the old.
+    pub new_recorder: fn() -> Box<dyn Recorder>,
 }

@@ -7,10 +7,13 @@ pub mod host;
 pub mod llm;
 pub mod pipeline;
 pub mod platform;
+mod runtime;
 #[cfg(feature = "speech")]
 pub mod speech;
 pub mod transcription;
 pub mod warmup;
+
+pub use runtime::Runtime;
 
 #[cfg(test)]
 mod endpoint_tests;

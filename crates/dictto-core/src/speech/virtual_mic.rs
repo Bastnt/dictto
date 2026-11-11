@@ -1,7 +1,7 @@
 //! Routes one read to a virtual microphone: the default input is switched for the
 //! read, a manual change by the user stops playback, and the route is restored after.
 use super::route::{self, Defaults};
-use super::{Player, VirtualMic};
+use super::{MicRouteControl, Player, VirtualMic};
 use async_trait::async_trait;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -160,6 +160,21 @@ impl<D: Defaults + Send + Sync + 'static, O: MicOutput> MicRoute<D, O> {
         if let Err(error) = self.end(None, true) {
             log::error!("Microphone recovery pending: {error}");
         }
+    }
+}
+
+impl<D: Defaults + Send + Sync + 'static, O: MicOutput> MicRouteControl for MicRoute<D, O> {
+    fn recover(&self) -> Result<(), String> {
+        MicRoute::recover(self)
+    }
+    fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+        MicRoute::set_enabled(self, enabled)
+    }
+    fn session_changed(&self, suspended: bool) -> Result<(), String> {
+        MicRoute::session_changed(self, suspended)
+    }
+    fn shutdown(&self) {
+        MicRoute::shutdown(self)
     }
 }
 

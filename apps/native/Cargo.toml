@@ -5,16 +5,10 @@ edition = "2021"
 description = "Lightweight Win32 interface for Dictto"
 build = "build.rs"
 
-[features]
-default = []
-tauri-host = []
-
 [dependencies]
 serde_json = "1"
-reqwest = { version = "0.13", features = ["json", "multipart"] }
 dictto-core = { path = "../../crates/dictto-core", features = ["speech"] }
 dictto-windows = { path = "../../crates/dictto-windows", features = ["speech"] }
-thiserror = "2"
 log = "0.4"
 winreg = "0.55"
 windows = { version = "0.62", features = [

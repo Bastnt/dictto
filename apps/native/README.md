@@ -95,17 +95,16 @@ reports the problem without rerouting the microphone.
 Developer checks:
 
 ```powershell
-cargo test --manifest-path apps/native/Cargo.toml
-cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+cargo test --workspace
 ```
 
 `dictto-native.exe --smoke-test` opens actual settings without starting the microphone,
 global hotkeys or model warmup. It reads existing settings; using Save still changes
 them. Add `--autostart` to verify tray-only startup without recording services.
 
-The shared speech modules live under `apps/desktop/src-tauri/src/services`; the
-native host maps their events/state access onto a two-worker Tokio runtime and
-posted Win32 messages. The hidden tray host remains alive without settings.
+The shared logic lives in `crates/dictto-core` (speech behind its `speech` feature) and
+the Win32 services in `crates/dictto-windows`; the native host drives `dictto_core::Runtime`
+through an event sink that posts Win32 messages, on a two-worker Tokio runtime. The hidden tray host remains alive without settings.
 Changes to shared services must be checked in both variants. Measure working set,
 private committed memory, threads and on-disk size separately. `--smoke-test`
 comparisons exclude recording hooks, device monitoring and model warmup.

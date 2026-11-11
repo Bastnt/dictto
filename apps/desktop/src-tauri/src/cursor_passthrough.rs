@@ -1,4 +1,3 @@
-use crate::host as tauri;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter};

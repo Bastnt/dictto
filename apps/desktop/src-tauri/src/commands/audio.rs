@@ -1,15 +1,17 @@
-pub use dictto_windows::MicrophoneInfo;
+use dictto_core::audio::MicrophoneInfo;
+use dictto_core::Runtime;
+use tauri::State;
 
 #[tauri::command]
-pub fn list_microphones() -> Result<Vec<MicrophoneInfo>, String> {
-    dictto_windows::recorder::list_microphones().map_err(|e| e.to_string())
+pub fn list_microphones(runtime: State<'_, Runtime>) -> Result<Vec<MicrophoneInfo>, String> {
+    runtime.microphones()
 }
 
 /// Returns the friendly name of the device the monitor currently tracks.
 /// Used by the frontend to display "Auto-detect (Device Name)".
 #[tauri::command]
-pub fn get_current_microphone(state: tauri::State<'_, std::sync::Arc<dictto_core::CoreState>>) -> String {
-    state.device_monitor.get_device_name()
+pub fn get_current_microphone(runtime: State<'_, Runtime>) -> String {
+    runtime.current_microphone()
 }
 
 /// Start continuous recording from UI click (bar pill click)

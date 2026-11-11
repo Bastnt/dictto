@@ -48,11 +48,13 @@ const CACHE_FILES: CacheFiles = CacheFiles {
     locked,
 };
 
-/// `mic_route` stays with the app, which drives its session and shutdown lifecycle.
-pub fn platform(mic_route: &Arc<Manager>) -> SpeechPlatform {
+/// The microphone route journals under `data_dir`.
+pub fn platform(data_dir: &Path) -> SpeechPlatform {
+    let mic_route = Arc::new(manager(data_dir));
     SpeechPlatform {
         player: Arc::new(Speakers),
-        virtual_mic: dictto_core::speech::virtual_mic::virtual_mic(mic_route),
+        virtual_mic: dictto_core::speech::virtual_mic::virtual_mic(&mic_route),
+        mic_route,
         selection: Arc::new(WindowsSelection),
         cache_files: CACHE_FILES,
     }

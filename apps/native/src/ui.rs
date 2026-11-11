@@ -1,4 +1,4 @@
-use dictto_native::runtime::NativeRuntime;
+use dictto_core::Runtime;
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -43,7 +43,7 @@ const FIELDS: &[(usize, &str)] = &[
 ];
 
 struct App {
-    runtime: NativeRuntime,
+    runtime: Runtime,
     events: mpsc::Receiver<(String, Value)>,
     host: HWND,
     window: HWND,
@@ -931,7 +931,8 @@ pub fn run() -> Result<(), String> {
     let sink_address = host_address.clone();
     let overlay_slot = Arc::new(Mutex::new(None::<crate::overlay::NativeOverlay>));
     let sink_overlay = overlay_slot.clone();
-    let runtime = NativeRuntime::new(data, move |name, payload| {
+    let speech = dictto_windows::speech::platform(&data);
+    let runtime = Runtime::with_speech(data, dictto_windows::platform(), speech, move |name, payload| {
         if let Some(overlay) = sink_overlay.lock().unwrap().as_ref() {
             overlay.send(name, payload.clone());
         }
@@ -971,7 +972,7 @@ pub fn run() -> Result<(), String> {
 }
 
 unsafe fn run_windows(
-    runtime: NativeRuntime,
+    runtime: Runtime,
     events: mpsc::Receiver<(String, Value)>,
     address: Arc<AtomicIsize>,
     smoke: bool,
@@ -1111,7 +1112,7 @@ mod tests {
     fn settings_controls_persist_and_release_the_window_on_close() {
         let path = std::env::temp_dir().join(format!("dictto-win32-ui-{}", std::process::id()));
         {
-            let runtime = NativeRuntime::new(path.clone(), |_, _| {}).unwrap();
+            let runtime = Runtime::with_speech(path.clone(), dictto_windows::platform(), dictto_windows::speech::platform(&path), |_, _| {}).unwrap();
             runtime.set_setting("languages", r#"["fr","en"]"#).unwrap();
             let (events_tx, events) = mpsc::channel();
             unsafe {

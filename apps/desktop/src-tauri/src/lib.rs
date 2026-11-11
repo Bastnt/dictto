@@ -1,12 +1,8 @@
-mod host;
 mod commands;
-mod services;
+mod cursor_passthrough;
 mod tray;
 
-use dictto_core::CoreState;
 use log::LevelFilter;
-use std::sync::Arc;
-use std::sync::Mutex;
 use tauri::Emitter;
 use tauri::Manager;
 use tauri::WebviewUrl;
@@ -18,17 +14,6 @@ pub fn run() {
         Ok(guard) => guard,
         Err(error) => { eprintln!("{error}"); return; }
     };
-    // Shared services spawn on the core runtime, not on Tauri's.
-    if let Err(error) = dictto_core::host::async_runtime::initialize() {
-        eprintln!("{error}");
-        return;
-    }
-    let audio_recorder = dictto_windows::WindowsRecorder::new();
-    let http_client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .expect("Failed to create HTTP client");
-
     let is_autostart = std::env::args().any(|arg| arg == "--autostart");
     log::info!("Launch mode: {}", if is_autostart { "auto-start" } else { "manual" });
 
@@ -62,59 +47,18 @@ pub fn run() {
             commands::window::clear_pill_hitbox,
         ])
         .setup(move |app| {
-            // Initialize database in Tauri's local data directory
             let data_dir = app.path().app_local_data_dir()?;
-            let db = dictto_core::db::Database::new(data_dir)
-                .expect("Failed to initialize database");
-
-            let device_monitor_state = Arc::new(dictto_core::audio::DeviceMonitorState::new());
-            let state = Arc::new(CoreState {
-                platform: dictto_windows::platform(),
-                audio_recorder: Mutex::new(Box::new(audio_recorder)),
-                db: Mutex::new(db),
-                http_client,
-                device_monitor: device_monitor_state.clone(),
-                device_monitor_shutdown: Mutex::new(None),
-            });
-            // Shared services emit through the core handle; forward to the webviews.
             let tauri_handle = app.handle().clone();
-            let core = dictto_core::host::AppHandle::new(
-                &state,
-                Arc::new(move |event: &str, payload: serde_json::Value| {
+            let runtime = dictto_core::Runtime::new(
+                data_dir,
+                dictto_windows::platform(),
+                move |event: &str, payload: serde_json::Value| {
                     let _ = tauri_handle.emit(event, payload);
-                }),
-            );
-
-            // Spawn device monitor thread (Windows only — cfg guard inside spawn_monitor)
-            #[cfg(windows)]
-            {
-                let shutdown_tx = dictto_windows::device_monitor::spawn(
-                    device_monitor_state,
-                    core.clone(),
-                );
-                *state.device_monitor_shutdown.lock().unwrap() = Some(shutdown_tx);
-            }
-
-            app.manage(state.clone());
-            app.manage(core.clone());
-
-            // Migration: ensure existing auto-start registry entries include --autostart flag
-            {
-                let db = state.db.lock().unwrap();
-                if db.get_setting("auto_start").as_deref() == Some("true") {
-                    if let Ok(exe_path) = std::env::current_exe() {
-                        let _ = dictto_windows::autostart::enable_autostart(&exe_path.to_string_lossy());
-                    }
-                }
-            }
-
-            // Inject AppHandle into AudioRecorder for waveform event emission
-            state.audio_recorder.lock().unwrap().set_app_handle(core.clone());
-
-            dictto_core::warmup::schedule(&core);
+                },
+            )?;
+            app.manage(runtime.clone());
+            runtime.start()?;
             tray::setup_tray(app)?;
-            dictto_core::dictation::start(&core)?;
-            dictto_windows::keyboard::install()?;
 
             // Create recording bar overlay window
             let monitor = app
@@ -162,7 +106,7 @@ pub fn run() {
             if let Some(bar_window) = app.get_webview_window("recording-bar") {
                 let _ = bar_window.set_ignore_cursor_events(true);
             }
-            services::cursor_passthrough::start_mouse_hook(app.handle().clone());
+            cursor_passthrough::start_mouse_hook(app.handle().clone());
 
             // Set high-resolution window icon for sharp taskbar display
             if let Some(main_window) = app.get_webview_window("main") {

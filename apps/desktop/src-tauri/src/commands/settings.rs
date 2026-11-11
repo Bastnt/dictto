@@ -1,59 +1,20 @@
-use dictto_windows::autostart;
-use dictto_core::CoreState;
-use std::sync::Arc;
+use dictto_core::Runtime;
 use std::collections::HashMap;
-use tauri::{Emitter, State};
+use tauri::State;
 
 #[tauri::command]
-pub fn get_setting(key: String, state: State<'_, Arc<CoreState>>) -> Result<Option<String>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    Ok(db.get_setting(&key))
+pub fn get_setting(key: String, runtime: State<'_, Runtime>) -> Result<Option<String>, String> {
+    Ok(runtime.get_settings()?.remove(&key))
 }
 
 #[tauri::command]
-pub fn set_setting(
-    key: String,
-    value: String,
-    app: tauri::AppHandle,
-    state: State<'_, Arc<CoreState>>,
-) -> Result<(), String> {
-    let hotkey = if key == "hotkey" {
-        Some(dictto_core::keys::Chord::parse(&value)?)
-    } else { None };
-    {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        db.set_setting(&key, &value).map_err(|e| e.to_string())?;
-    } // db lock released here
-    if let Some(chord) = hotkey { dictto_core::dictation::configure(chord); }
-
-    // Handle auto-start toggle
-    if key == "auto_start" {
-        if let Ok(exe_path) = std::env::current_exe() {
-            let exe_str = exe_path.to_string_lossy().to_string();
-            if value == "true" {
-                let _ = autostart::enable_autostart(&exe_str);
-            } else {
-                let _ = autostart::disable_autostart();
-            }
-        }
-    }
-
-    // Microphone device change is handled dynamically — the new device
-    // is read from settings on each start() call, no pre-warming needed.
-
-    // Notify all windows of the setting change
-    let _ = app.emit(
-        "setting-changed",
-        serde_json::json!({ "key": key, "value": value }),
-    );
-
-    Ok(())
+pub fn set_setting(key: String, value: String, runtime: State<'_, Runtime>) -> Result<(), String> {
+    runtime.set_setting(&key, &value)
 }
 
 #[tauri::command]
-pub fn get_all_settings(state: State<'_, Arc<CoreState>>) -> Result<HashMap<String, String>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.get_all_settings().map_err(|e| e.to_string())
+pub fn get_all_settings(runtime: State<'_, Runtime>) -> Result<HashMap<String, String>, String> {
+    runtime.get_settings()
 }
 
 #[tauri::command]

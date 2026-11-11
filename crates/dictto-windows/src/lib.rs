@@ -6,6 +6,7 @@ pub mod instance;
 pub mod keyboard;
 pub mod keymap;
 pub mod recorder;
+pub mod services;
 pub mod sound;
 #[cfg(feature = "speech")]
 pub mod speech;
@@ -13,6 +14,7 @@ pub mod speech;
 pub use dictto_core::audio::MicrophoneInfo;
 pub use injector::WindowsInjector;
 pub use recorder::{WindowsDevices, WindowsRecorder};
+pub use services::WindowsServices;
 pub use sound::WindowsSounds;
 
 /// The Windows implementations of the traits the core reaches the OS through.
@@ -21,5 +23,7 @@ pub fn platform() -> dictto_core::platform::Platform {
         injector: std::sync::Arc::new(WindowsInjector),
         sounds: std::sync::Arc::new(WindowsSounds),
         devices: std::sync::Arc::new(WindowsDevices),
+        services: std::sync::Arc::new(WindowsServices),
+        new_recorder: || Box::new(WindowsRecorder::new()),
     }
 }
