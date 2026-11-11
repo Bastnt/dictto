@@ -38,6 +38,8 @@ pub trait MicRouteControl: Send + Sync {
     fn set_enabled(&self, enabled: bool) -> Result<(), String>;
     fn session_changed(&self, suspended: bool) -> Result<(), String>;
     fn shutdown(&self);
+    /// What users call the routed input, for recovery messages.
+    fn input_name(&self) -> String;
 }
 
 pub struct SpeechPlatform {
@@ -428,6 +430,9 @@ pub(crate) mod tests {
             Ok(())
         }
         fn shutdown(&self) {}
+        fn input_name(&self) -> String {
+            "default microphone".into()
+        }
     }
     impl SelectionReader for Unused {
         fn read(&self) -> Result<String, String> {

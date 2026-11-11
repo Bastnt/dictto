@@ -25,5 +25,12 @@ pub fn platform() -> dictto_core::platform::Platform {
         devices: std::sync::Arc::new(WindowsDevices),
         services: std::sync::Arc::new(WindowsServices),
         new_recorder: std::sync::Arc::new(|| Box::new(WindowsRecorder::new())),
+        wording: &WORDING,
     }
 }
+
+pub const WORDING: dictto_core::platform::Wording = dictto_core::platform::Wording {
+    no_microphone: "Windows has no microphone available. Connect one or enable microphone recording in Remote Desktop, then reconnect.",
+    microphone_unavailable: "Cannot open the microphone. Check the input device in Settings > Audio and Windows microphone access.",
+    credential_store: "Windows Credential Manager",
+};

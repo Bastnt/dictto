@@ -16,8 +16,11 @@ pub trait MicOutput: Send + Sync + 'static {
     /// Fails when the playback side of the virtual microphone is missing.
     fn ensure_present(&self) -> Result<(), String>;
     fn locate(&self) -> Result<Self::Target, String>;
-    /// Gives capturing applications time to follow the default input change.
-    async fn wait_ready(&self);
+    /// Gives capturing applications time to follow the default input change. A long
+    /// wait polls `check` and returns its error, so a lock or disable aborts it early.
+    async fn wait_ready<C>(&self, check: C) -> Result<(), String>
+    where
+        C: FnMut() -> Result<(), String> + Send;
     /// Plays the WAV, stopping with `check`'s error as soon as it returns one.
     async fn play<R, C>(&self, wav: hound::WavReader<R>, target: &Self::Target, check: C) -> Result<(), String>
     where
@@ -176,6 +179,9 @@ impl<D: Defaults + Send + Sync + 'static, O: MicOutput> MicRouteControl for MicR
     fn shutdown(&self) {
         MicRoute::shutdown(self)
     }
+    fn input_name(&self) -> String {
+        self.defaults.input_name().into()
+    }
 }
 
 struct Handle<D, O>(Arc<MicRoute<D, O>>);
@@ -219,7 +225,10 @@ impl<D: Defaults + Send + Sync + 'static, O: MicOutput> RoutedPlayer<D, O> {
             *slot = Some(token);
             token
         };
-        self.route.output.wait_ready().await;
+        self.route
+            .output
+            .wait_ready(|| self.route.check_route(token))
+            .await?;
         self.route
             .output
             .play(wav, &target, || self.route.check_route(token))
@@ -285,11 +294,13 @@ mod tests {
         }
     }
 
-    /// Plays for `steps` ticks of 30 ms, switching the input to "user" at `switch_at`.
+    /// Waits `waits` ticks and plays for `steps` ticks of 30 ms, switching the input to
+    /// "user" at `switch_at`.
     struct Output {
         input: Arc<Mutex<String>>,
         steps: u32,
         switch_at: Option<u32>,
+        waits: u32,
     }
     #[async_trait]
     impl MicOutput for Output {
@@ -300,7 +311,16 @@ mod tests {
         fn locate(&self) -> Result<(), String> {
             Ok(())
         }
-        async fn wait_ready(&self) {}
+        async fn wait_ready<C>(&self, mut check: C) -> Result<(), String>
+        where
+            C: FnMut() -> Result<(), String> + Send,
+        {
+            for _ in 0..self.waits {
+                check()?;
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+            Ok(())
+        }
         async fn play<R, C>(&self, _: hound::WavReader<R>, _: &(), mut check: C) -> Result<(), String>
         where
             R: Read + Send,
@@ -319,13 +339,20 @@ mod tests {
 
     static SERIAL: AtomicU64 = AtomicU64::new(0);
     fn route(steps: u32, switch_at: Option<u32>) -> (Arc<MicRoute<Fake, Output>>, Arc<Mutex<String>>, PathBuf) {
+        route_waiting(steps, switch_at, 1)
+    }
+    fn route_waiting(
+        steps: u32,
+        switch_at: Option<u32>,
+        waits: u32,
+    ) -> (Arc<MicRoute<Fake, Output>>, Arc<Mutex<String>>, PathBuf) {
         let input = Arc::new(Mutex::new("usb".to_string()));
         let journal = std::env::temp_dir().join(format!(
             "dictto-mic-route-{}-{}.json",
             std::process::id(),
             SERIAL.fetch_add(1, Ordering::Relaxed)
         ));
-        let output = Output { input: input.clone(), steps, switch_at };
+        let output = Output { input: input.clone(), steps, switch_at, waits };
         let route = Arc::new(MicRoute::new(Ok(journal.clone()), Fake(input.clone()), output));
         route.set_enabled(true).unwrap();
         (route, input, journal)
@@ -365,6 +392,21 @@ mod tests {
         player.finish().unwrap();
         assert_eq!(*input.lock().unwrap(), "user");
         assert!(!journal.exists());
+    }
+
+    #[tokio::test]
+    async fn locking_the_session_aborts_a_long_wait_for_readiness() {
+        let (route, input, _journal) = route_waiting(1, None, 100);
+        let player = RoutedPlayer::new(route.clone());
+        let started = Instant::now();
+        let lock = async {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            route.session_changed(true).unwrap();
+        };
+        let (result, ()) = tokio::join!(player.play(wav()), lock);
+        assert_eq!(result.unwrap_err(), "Virtual microphone playback was stopped.");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(*input.lock().unwrap(), "usb");
     }
 
     #[tokio::test]

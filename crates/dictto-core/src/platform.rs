@@ -1,6 +1,7 @@
 use crate::audio::{AudioError, DeviceMonitorState, DeviceSelection, MicrophoneInfo};
 use std::sync::Arc;
 use crate::host::AppHandle;
+use std::sync::OnceLock;
 
 pub trait Recorder: Send {
     fn set_app_handle(&mut self, app: AppHandle);
@@ -59,4 +60,35 @@ pub struct Platform {
     pub services: Arc<dyn Services>,
     /// The runtime builds the recorder, and a fresh one at shutdown to release the old.
     pub new_recorder: Arc<dyn Fn() -> Box<dyn Recorder> + Send + Sync>,
+    pub wording: &'static Wording,
+}
+
+/// User-facing messages that name OS facilities. They are read by free functions
+/// (friendly errors, the keystore) that hosts also call outside the runtime.
+pub struct Wording {
+    /// Shown when no capture device exists.
+    pub no_microphone: &'static str,
+    /// Shown when the capture device cannot be opened.
+    pub microphone_unavailable: &'static str,
+    /// Where API keys are stored, as in "API key was not persisted in {credential_store}".
+    pub credential_store: &'static str,
+}
+
+pub const GENERIC_WORDING: Wording = Wording {
+    no_microphone: "No microphone is available. Connect one, then try again.",
+    microphone_unavailable:
+        "Cannot open the microphone. Check the input device in Settings > Audio and the system microphone permissions.",
+    credential_store: "the system keyring",
+};
+
+static WORDING: OnceLock<&'static Wording> = OnceLock::new();
+
+/// The first call wins; `Runtime` calls it with `Platform::wording`, and a host that reads
+/// the messages before building its runtime calls it first.
+pub fn set_wording(wording: &'static Wording) {
+    let _ = WORDING.set(wording);
+}
+
+pub fn wording() -> &'static Wording {
+    WORDING.get().copied().unwrap_or(&GENERIC_WORDING)
 }

@@ -34,9 +34,14 @@ impl MicOutput for CableOutput {
     fn locate(&self) -> Result<u32, String> {
         playback::device_id_for_endpoint(&cable_endpoint(eRender)?)
     }
-    async fn wait_ready(&self) {
-        // Give communications clients time to reopen capture after the default changes.
+    async fn wait_ready<C>(&self, _check: C) -> Result<(), String>
+    where
+        C: FnMut() -> Result<(), String> + Send,
+    {
+        // Give communications clients time to reopen capture after the default changes;
+        // too short to need early abort, and playback checks the route on its first poll.
         tokio::time::sleep(Duration::from_millis(400)).await;
+        Ok(())
     }
     async fn play<R, C>(&self, wav: hound::WavReader<R>, target: &u32, check: C) -> Result<(), String>
     where

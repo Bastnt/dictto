@@ -58,6 +58,7 @@ impl Runtime {
         sink: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
     ) -> Result<Self, String> {
         host::async_runtime::initialize()?;
+        crate::platform::set_wording(platform.wording);
         let recorder = (platform.new_recorder)();
         #[cfg(feature = "speech")]
         let speech_dir = data_dir.clone();
@@ -295,8 +296,13 @@ impl Runtime {
     }
     #[cfg(feature = "speech")]
     fn report_route_error(&self, error: String) {
-        log::error!("Communications microphone recovery: {error}");
-        let message = format!("Could not restore the communications microphone. {error}");
+        let name = self
+            .mic_route()
+            .map_or_else(|| "default microphone".into(), |route| route.input_name());
+        let mut chars = name.chars();
+        let title: String = chars.next().into_iter().flat_map(char::to_uppercase).chain(chars).collect();
+        log::error!("{title} recovery: {error}");
+        let message = format!("Could not restore the {name}. {error}");
         let _ = self
             .inner
             .app
@@ -371,6 +377,28 @@ mod tests {
             runtime.set_setting("hotkey", "Ctrl+Shift+F8").unwrap();
             assert_eq!(runtime.get_setting("hotkey").as_deref(), Some("Ctrl+Shift+F8"));
         }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[cfg(feature = "speech")]
+    #[test]
+    fn route_errors_name_the_platform_input() {
+        let path = std::env::temp_dir().join(format!("dictto-core-route-{}", std::process::id()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        {
+            let runtime = runtime(path.clone(), move |name, payload| {
+                sink.lock().unwrap().push((name.to_owned(), payload))
+            });
+            runtime.report_route_error("Busy.".into());
+        }
+        assert_eq!(
+            events.lock().unwrap()[0],
+            (
+                crate::events::SPEECH_ERROR.into(),
+                serde_json::json!({"message":"Could not restore the default microphone. Busy."})
+            )
+        );
         std::fs::remove_dir_all(path).unwrap();
     }
 

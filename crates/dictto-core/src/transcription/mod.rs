@@ -29,9 +29,9 @@ impl TranscriptionConfig {
 pub fn friendly_error(message: &str) -> &'static str {
     let lower = message.to_lowercase();
     if lower.contains("no input device") {
-        "Windows has no microphone available. Connect one or enable microphone recording in Remote Desktop, then reconnect."
+        crate::platform::wording().no_microphone
     } else if lower.contains("audio device error") {
-        "Cannot open the microphone. Check the input device in Settings > Audio and Windows microphone access."
+        crate::platform::wording().microphone_unavailable
     } else if lower.contains("auto-detection") || lower.contains("explicit supported language") {
         "Canary does not support auto-detection. Select one language in Settings > General > Languages."
     } else if lower.contains("unknown_preset") {

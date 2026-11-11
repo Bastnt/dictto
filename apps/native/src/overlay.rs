@@ -576,6 +576,7 @@ mod tests {
 
     #[test]
     fn state_clears_errors_when_a_new_recording_begins() {
+        dictto_core::platform::set_wording(&dictto_windows::WORDING);
         let (_, receiver) = std::sync::mpsc::channel();
         let mut state = super::State {
             receiver,

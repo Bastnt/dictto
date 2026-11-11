@@ -13,7 +13,8 @@ pub fn set_api_key(api_key: &str) -> Result<(), String> {
         Ok(stored) if stored == api_key => Ok(()),
         Ok(_) => Err("API key verification failed: stored value doesn't match".to_string()),
         Err(e) => Err(format!(
-            "API key was not persisted in Windows Credential Manager: {}",
+            "API key was not persisted in {}: {}",
+            crate::platform::wording().credential_store,
             e
         )),
     }
