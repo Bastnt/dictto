@@ -1,3 +1,4 @@
+use dictto_core::events;
 use serde_json::Value;
 use std::sync::{mpsc, Arc};
 use windows::core::w;
@@ -102,7 +103,7 @@ impl NativeOverlay {
     pub fn send(&self, event: &str, payload: Value) {
         if !matches!(
             event,
-            "recording-state-changed" | "waveform-data" | "dictation-error" | "speech-error"
+            events::RECORDING_STATE_CHANGED | events::WAVEFORM_DATA | events::DICTATION_ERROR | events::SPEECH_ERROR
         ) {
             return;
         }
@@ -140,7 +141,7 @@ struct State {
 impl State {
     fn event(&mut self, name: &str, value: &Value) {
         match name {
-            "recording-state-changed" => {
+            events::RECORDING_STATE_CHANGED => {
                 self.recording = value["state"] == "recording";
                 self.processing = value["state"] == "processing";
                 self.continuous = self.recording && value["mode"] == "continuous";
@@ -148,7 +149,7 @@ impl State {
                     self.error.clear();
                 }
             }
-            "waveform-data" => {
+            events::WAVEFORM_DATA => {
                 if let Some(values) = value["amplitudes"].as_array() {
                     let samples: Vec<f32> = values
                         .iter()
@@ -157,13 +158,13 @@ impl State {
                     self.bars = fit_bars(&samples, 24);
                 }
             }
-            "speech-error" => {
+            events::SPEECH_ERROR => {
                 self.recording = false;
                 self.processing = false;
                 self.continuous = false;
                 self.error = value["message"].as_str().unwrap_or("Speech failed").to_owned();
             }
-            "dictation-error" => {
+            events::DICTATION_ERROR => {
                 self.recording = false;
                 self.processing = false;
                 self.continuous = false;
@@ -210,13 +211,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         return LRESULT(0);
                     }
                     Message::Event(name, value) => {
-                        if name == "dictation-error" || name == "speech-error" {
+                        if name == events::DICTATION_ERROR || name == events::SPEECH_ERROR {
                             SetTimer(Some(hwnd), 1, 15000, None);
                         }
-                        if name == "recording-state-changed" && value["state"] == "recording" {
+                        if name == events::RECORDING_STATE_CHANGED && value["state"] == "recording" {
                             let _ = KillTimer(Some(hwnd), 1);
                         }
-                        layout_changed |= name != "waveform-data";
+                        layout_changed |= name != events::WAVEFORM_DATA;
                         state.event(&name, &value);
                     }
                 }
@@ -506,6 +507,8 @@ unsafe fn paint(hwnd: HWND, state: &State) {
 
 #[cfg(test)]
 mod tests {
+    use dictto_core::events;
+
     #[test]
     fn native_window_shows_without_activation_and_routes_controls() {
         use std::sync::{
@@ -529,7 +532,7 @@ mod tests {
         .unwrap();
         let hwnd = HWND(overlay.hwnd as _);
         overlay.send(
-            "recording-state-changed",
+            events::RECORDING_STATE_CHANGED,
             serde_json::json!({"state":"recording", "mode":"continuous"}),
         );
         let wait = |condition: &dyn Fn() -> bool| {
@@ -586,26 +589,26 @@ mod tests {
             animation_phase: 0,
         };
         state.event(
-            "dictation-error",
+            events::DICTATION_ERROR,
             &serde_json::json!({"message":"secret backend failure"}),
         );
         assert!(state.active());
         assert!(!state.error.contains("secret"));
-        state.event("dictation-error", &serde_json::json!({"message":
+        state.event(events::DICTATION_ERROR, &serde_json::json!({"message":
             "Canary requires an explicit supported language, such as fr or en"}));
         assert!(state.error.contains("auto-detection"), "{}", state.error);
         assert!(state.error.contains("Languages"));
-        state.event("dictation-error", &serde_json::json!({"message":"Audio device error: No input device found"}));
+        state.event(events::DICTATION_ERROR, &serde_json::json!({"message":"Audio device error: No input device found"}));
         assert!(state.error.contains("microphone"));
         assert!(state.error.contains("Remote Desktop"));
         state.event(
-            "recording-state-changed",
+            events::RECORDING_STATE_CHANGED,
             &serde_json::json!({"state":"recording","mode":"continuous"}),
         );
         assert!(state.error.is_empty());
         assert!(state.recording && state.continuous);
         state.event(
-            "recording-state-changed",
+            events::RECORDING_STATE_CHANGED,
             &serde_json::json!({"state":"idle"}),
         );
         assert!(!state.active());

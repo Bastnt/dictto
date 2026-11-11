@@ -11,8 +11,6 @@ pub struct AppHandle {
     sink: Arc<EventSink>,
 }
 
-pub type App = AppHandle;
-
 impl AppHandle {
     pub fn new(state: &Arc<CoreState>, sink: Arc<EventSink>) -> Self {
         Self { states: Vec::new(), sink }.with_state(state)
@@ -21,9 +19,6 @@ impl AppHandle {
     pub fn with_state<T: Any + Send + Sync>(mut self, state: &Arc<T>) -> Self {
         let state: Arc<dyn Any + Send + Sync> = state.clone();
         self.states.push(Arc::downgrade(&state));
-        self
-    }
-    pub fn handle(&self) -> &Self {
         self
     }
 }
@@ -36,7 +31,7 @@ impl Manager for AppHandle {
         self.states
             .iter()
             .find_map(|state| state.upgrade()?.downcast().ok())
-            .unwrap_or_else(|| panic!("unsupported native application state"))
+            .unwrap_or_else(|| panic!("unsupported application state"))
     }
 }
 
@@ -73,7 +68,7 @@ pub mod async_runtime {
     {
         RUNTIME
             .get()
-            .expect("native Tokio runtime initialized")
+            .expect("core Tokio runtime initialized")
             .spawn(future)
     }
 

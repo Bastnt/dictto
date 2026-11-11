@@ -1,6 +1,7 @@
 //! Push-to-talk dictation state machine, fed by any platform keyboard source.
+use crate::events;
 use crate::audio::DeviceSelection;
-use crate::host::{self as tauri, AppHandle, Emitter, Manager};
+use crate::host::{self, AppHandle, Emitter, Manager};
 use crate::keys;
 use crate::pipeline::RecordedAudio;
 use crate::platform::{Sound, Sounds};
@@ -64,7 +65,7 @@ pub(crate) fn send_speech(message: crate::speech::session::Message) {
     }
 }
 
-type AsyncJoinHandle = tauri::async_runtime::JoinHandle<()>;
+type AsyncJoinHandle = host::async_runtime::JoinHandle<()>;
 
 enum HotkeyEvent {
     #[cfg(feature = "speech")]
@@ -86,7 +87,7 @@ static HOTKEY_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<HotkeyEvent>> = On
 /// Payload: { "state": "recording", "mode": "hold" } or { "state": "idle", "mode": null }
 pub fn emit_state(app: &AppHandle, state: &str, mode: Option<&str>) {
     let _ = app.emit(
-        "recording-state-changed",
+        events::RECORDING_STATE_CHANGED,
         serde_json::json!({ "state": state, "mode": mode }),
     );
 }
@@ -164,7 +165,7 @@ fn enqueue_pipeline(
     if pipeline_tx.send(data).is_err() {
         log::error!("[hotkey] Pipeline worker stopped; recording could not be queued");
         let _ = app.emit(
-            "dictation-error",
+            events::DICTATION_ERROR,
             serde_json::json!({"message": "The transcription queue is unavailable."}),
         );
         emit_pending_state(app, *pending);
@@ -195,7 +196,7 @@ fn start_recording(app: &AppHandle, sounds: &dyn Sounds, preload: bool, pending:
     };
     if let Err(error) = validation {
         emit_pending_state(app, pending);
-        let _ = app.emit("dictation-error", serde_json::json!({"message": error.to_string()}));
+        let _ = app.emit(events::DICTATION_ERROR, serde_json::json!({"message": error.to_string()}));
         return None;
     }
 
@@ -232,7 +233,7 @@ fn start_recording(app: &AppHandle, sounds: &dyn Sounds, preload: bool, pending:
         drop(recorder);
         log::error!("[hotkey] Failed to start recording: {}", e);
         emit_pending_state(app, pending);
-        let _ = app.emit("dictation-error", serde_json::json!({"message":e.to_string()}));
+        let _ = app.emit(events::DICTATION_ERROR, serde_json::json!({"message":e.to_string()}));
         return None;
     }
     drop(recorder); // explicit drop to release mutex before play_sound acquires db mutex
@@ -278,10 +279,10 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         .map_err(|_| "Bar action channel already initialized")?;
 
     // Spawn async task to process hotkey events with state machine
-    let app_handle = app.handle().clone();
+    let app_handle = app.clone();
     let timer_handle: Arc<Mutex<Option<AsyncJoinHandle>>> = Arc::new(Mutex::new(None));
 
-    tauri::async_runtime::spawn(async move {
+    host::async_runtime::spawn(async move {
         // State machine
         enum State {
             Idle,
@@ -314,7 +315,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         let (pipeline_tx, mut pipeline_rx) = tokio::sync::mpsc::unbounded_channel::<RecordedAudio>();
         let (completed_tx, mut completed_rx) = tokio::sync::mpsc::unbounded_channel::<Option<RecordedAudio>>();
         let pipeline_app = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
+        host::async_runtime::spawn(async move {
             while let Some(audio) = pipeline_rx.recv().await {
                 let result = crate::pipeline::run_pipeline(&pipeline_app, &audio).await;
                 match &result {
@@ -322,7 +323,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                     Err(error) => {
                         log::error!("[hotkey] Pipeline error: {}", error);
                         let _ = pipeline_app.emit(
-                            "dictation-error",
+                            events::DICTATION_ERROR,
                             serde_json::json!({"message": error.to_string()}),
                         );
                     }
@@ -364,7 +365,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                                 // Spawn recording limit timer
                                 let timer_handle_clone = timer_handle.clone();
                                 let limit_tx = timer_tx.clone();
-                                let handle = tauri::async_runtime::spawn(async move {
+                                let handle = host::async_runtime::spawn(async move {
                                     tokio::time::sleep(std::time::Duration::from_secs(limit_secs)).await;
                                     log::info!("Recording limit reached ({}s), auto-stopping", limit_secs);
                                     {
@@ -381,7 +382,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                                 // Start tap/hold discrimination timer
                                 if let Some(t) = tap_timer.take() { t.abort(); }
                                 let tx = timer_tx.clone();
-                                tap_timer = Some(tauri::async_runtime::spawn(async move {
+                                tap_timer = Some(host::async_runtime::spawn(async move {
                                     tokio::time::sleep(TAP_MAX_DURATION).await;
                                     let _ = tx.send("hold_confirmed");
                                 }));
@@ -400,7 +401,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                             // Recording KEEPS RUNNING — do NOT stop it.
                             if let Some(t) = tap_timer.take() { t.abort(); }
                             let tx = timer_tx.clone();
-                            tap_timer = Some(tauri::async_runtime::spawn(async move {
+                            tap_timer = Some(host::async_runtime::spawn(async move {
                                 tokio::time::sleep(DOUBLE_TAP_WINDOW).await;
                                 let _ = tx.send("single_tap_expired");
                             }));
@@ -537,7 +538,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                                 // Spawn recording limit timer
                                 let timer_handle_clone = timer_handle.clone();
                                 let limit_tx = timer_tx.clone();
-                                let handle = tauri::async_runtime::spawn(async move {
+                                let handle = host::async_runtime::spawn(async move {
                                     tokio::time::sleep(std::time::Duration::from_secs(limit_secs)).await;
                                     log::info!("Recording limit reached ({}s), auto-stopping", limit_secs);
                                     {

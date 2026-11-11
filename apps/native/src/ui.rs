@@ -1,3 +1,4 @@
+use dictto_core::events;
 use dictto_core::Runtime;
 use serde_json::Value;
 use std::{
@@ -701,24 +702,24 @@ impl App {
     unsafe fn drain_events(&mut self) {
         let mut devices_changed = false;
         while let Ok((name, payload)) = self.events.try_recv() {
-            if name == "speech-catalog" {
+            if name == events::SPEECH_CATALOG {
                 self.receive_speech_models(payload);
                 continue;
             }
-            if name == "audio-devices-changed" {
+            if name == events::AUDIO_DEVICES_CHANGED {
                 devices_changed = true;
             }
-            if name == "speech-error" {
+            if name == events::SPEECH_ERROR {
                 self.status = payload["message"].as_str().unwrap_or("Speech action failed.").into();
             } else if matches!(
                 name.as_str(),
-                "error" | "recording-error" | "dictation-error"
+                "error" | "recording-error" | events::DICTATION_ERROR
             ) {
                 self.status = dictto_core::transcription::friendly_error(
                     payload["message"].as_str().unwrap_or_default()).into();
             } else if matches!(
                 name.as_str(),
-                "recording-state" | "recording-state-changed" | "processing-state"
+                "recording-state" | events::RECORDING_STATE_CHANGED | "processing-state"
             ) {
                 self.status = payload["state"]
                     .as_str()
@@ -939,14 +940,14 @@ pub fn run() -> Result<(), String> {
         if matches!(
             name,
             "error"
-                | "speech-error"
+                | events::SPEECH_ERROR
                 | "recording-error"
-                | "dictation-error"
+                | events::DICTATION_ERROR
                 | "recording-state"
-                | "recording-state-changed"
+                | events::RECORDING_STATE_CHANGED
                 | "processing-state"
-                | "speech-catalog"
-                | "audio-devices-changed"
+                | events::SPEECH_CATALOG
+                | events::AUDIO_DEVICES_CHANGED
         ) {
             let _ = tx.send((name.into(), payload));
             let address = sink_address.load(Ordering::Acquire);
@@ -1208,7 +1209,7 @@ mod tests {
                 app.command(625, BN_CLICKED);
                 assert_eq!(app.runtime.get_settings().unwrap()["tts_virtual_mic"], "false");
                 let discovery = |app: &mut App, models: Value| {
-                    events_tx.send(("speech-catalog".into(), serde_json::json!({
+                    events_tx.send((events::SPEECH_CATALOG.into(), serde_json::json!({
                         "generation": app.catalog_generation, "models": models
                     }))).unwrap();
                     SendMessageW(app.host, EVENTS, None, None);
@@ -1227,7 +1228,7 @@ mod tests {
                 discovery(&mut app, serde_json::json!([]));
                 assert!(app.status.contains("no speech models"));
                 assert!(!IsWindowEnabled(app.control(610)).as_bool());
-                events_tx.send(("speech-catalog".into(), serde_json::json!({
+                events_tx.send((events::SPEECH_CATALOG.into(), serde_json::json!({
                     "generation": app.catalog_generation, "error": "unauthorized"
                 }))).unwrap();
                 SendMessageW(app.host, EVENTS, None, None);

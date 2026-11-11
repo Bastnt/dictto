@@ -1,5 +1,6 @@
 //! The application runtime hosts embed: shared state, settings, dictation lifecycle and
 //! the events that travel to the host's UI through the sink.
+use crate::events;
 use crate::audio::MicrophoneInfo;
 use crate::host::{self, AppHandle, Emitter};
 use crate::platform::Platform;
@@ -215,7 +216,7 @@ impl Runtime {
         self.inner
             .app
             .emit(
-                "setting-changed",
+                events::SETTING_CHANGED,
                 serde_json::json!({"key":key, "value":value}),
             )
             .map_err(|e| e.to_string())
@@ -237,7 +238,7 @@ impl Runtime {
                 Ok(models) => serde_json::json!({"generation": generation, "models": models}),
                 Err(error) => serde_json::json!({"generation": generation, "error": error}),
             };
-            let _ = runtime.inner.app.emit("speech-catalog", payload);
+            let _ = runtime.inner.app.emit(events::SPEECH_CATALOG, payload);
         });
     }
     pub fn has_key(&self) -> bool {
@@ -290,7 +291,7 @@ impl Runtime {
         let _ = self
             .inner
             .app
-            .emit("speech-error", serde_json::json!({"message":message}));
+            .emit(events::SPEECH_ERROR, serde_json::json!({"message":message}));
     }
     pub fn session_changed(&self, suspended: bool) {
         #[cfg(feature = "speech")]
@@ -390,7 +391,7 @@ mod tests {
             assert_eq!(
                 events.lock().unwrap()[0],
                 (
-                    "setting-changed".into(),
+                    events::SETTING_CHANGED.into(),
                     serde_json::json!({"key":"cleanup_enabled", "value":"false"})
                 )
             );

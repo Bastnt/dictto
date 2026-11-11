@@ -1,5 +1,8 @@
 pub mod dsp;
 
+use crate::events;
+use crate::host::{AppHandle, Emitter};
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -71,4 +74,12 @@ pub enum AudioError {
     DeviceError(String),
     #[error("Encoding error: {0}")]
     EncodingError(String),
+}
+
+/// Sends one bar frame from `dsp::Waveform` to the recording bar.
+pub fn emit_waveform(app: &AppHandle, amplitudes: Vec<f32>) {
+    let _ = app.emit(
+        events::WAVEFORM_DATA,
+        serde_json::json!({ "amplitudes": amplitudes }),
+    );
 }

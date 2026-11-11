@@ -4,6 +4,12 @@ pub const SAMPLE_RATE: u32 = 16000;
 pub const CHANNELS: u16 = 1;
 /// RMS threshold for silence detection — low enough for cheap/quiet microphones
 pub const SILENCE_RMS_THRESHOLD: f64 = 50.0;
+/// Minimum samples to consider a valid recording (~0.3s at 16kHz)
+pub const MIN_RECORDING_SAMPLES: usize = 4800;
+/// Emit waveform data every ~64ms (1024 samples at 16kHz)
+pub const WAVEFORM_EMIT_SAMPLES: usize = 1024;
+/// Number of amplitude bars the frontend expects
+pub const WAVEFORM_BARS: usize = 24;
 
 /// Convert multi-channel f32 samples to mono i16
 pub fn to_mono_i16_f32(samples: &[f32], channels: usize) -> Vec<i16> {
@@ -121,4 +127,142 @@ pub fn encode_wav(samples: &[i16]) -> Result<Vec<u8>, AudioError> {
         .map_err(|e| AudioError::EncodingError(e.to_string()))?;
 
     Ok(cursor.into_inner())
+}
+
+/// Turns a finished 16 kHz mono capture into WAV bytes, rejecting recordings that are
+/// too short or silent with `EmptyRecording`.
+pub fn finish(samples: &[i16]) -> Result<Vec<u8>, AudioError> {
+    if samples.len() < MIN_RECORDING_SAMPLES {
+        return Err(AudioError::EmptyRecording);
+    }
+    let (speech_detected, peak_rms) = has_speech(samples);
+    log::debug!(
+        "[audio] Speech detection — peak RMS: {:.1}, threshold: {:.1}, detected: {}",
+        peak_rms, SILENCE_RMS_THRESHOLD, speech_detected
+    );
+    if !speech_detected {
+        return Err(AudioError::EmptyRecording);
+    }
+    encode_wav(samples)
+}
+
+/// Accumulates capture packets into the bar frames the recording bar draws.
+#[derive(Default)]
+pub struct Waveform {
+    levels: Vec<f32>,
+    samples: usize,
+}
+
+impl Waveform {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `mono` is one packet at the device rate and gives one level; `produced` is the
+    /// number of 16 kHz samples it became, which paces the frames. Returns the last
+    /// `WAVEFORM_BARS` levels each time another `WAVEFORM_EMIT_SAMPLES` have been produced.
+    pub fn push(&mut self, mono: &[i16], produced: usize) -> Option<Vec<f32>> {
+        self.levels.push(level(mono));
+        let previous = self.samples;
+        self.samples += produced;
+        if previous / WAVEFORM_EMIT_SAMPLES == self.samples / WAVEFORM_EMIT_SAMPLES {
+            return None;
+        }
+        let start = self.levels.len().saturating_sub(WAVEFORM_BARS);
+        let bars = self.levels[start..].to_vec();
+        self.levels.clear();
+        Some(bars)
+    }
+}
+
+/// Square root of the RMS, doubled, so quiet speech still moves the bars.
+fn level(samples: &[i16]) -> f32 {
+    let rms = if !samples.is_empty() {
+        let sum: f32 = samples
+            .iter()
+            .map(|&s| {
+                let f = s as f32 / i16::MAX as f32;
+                f * f
+            })
+            .sum();
+        (sum / samples.len() as f32).sqrt()
+    } else {
+        0.0
+    };
+    (rms.sqrt() * 2.0).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sine(len: usize, amplitude: f64) -> Vec<i16> {
+        (0..len)
+            .map(|i| {
+                let phase = i as f64 * std::f64::consts::TAU * 440.0 / SAMPLE_RATE as f64;
+                (phase.sin() * amplitude * i16::MAX as f64) as i16
+            })
+            .collect()
+    }
+
+    #[test]
+    fn finish_rejects_short_recordings() {
+        let samples = sine(MIN_RECORDING_SAMPLES - 1, 0.5);
+        assert!(matches!(finish(&samples), Err(AudioError::EmptyRecording)));
+    }
+
+    #[test]
+    fn finish_rejects_silence() {
+        let samples = vec![10i16; SAMPLE_RATE as usize];
+        assert!(matches!(finish(&samples), Err(AudioError::EmptyRecording)));
+    }
+
+    #[test]
+    fn finish_encodes_speech_as_16k_mono_wav() {
+        let samples = sine(MIN_RECORDING_SAMPLES, 0.5);
+        let wav = finish(&samples).unwrap();
+        let reader = hound::WavReader::new(std::io::Cursor::new(wav)).unwrap();
+        assert_eq!(reader.spec().sample_rate, SAMPLE_RATE);
+        assert_eq!(reader.spec().channels, CHANNELS);
+        assert_eq!(reader.len() as usize, MIN_RECORDING_SAMPLES);
+    }
+
+    #[test]
+    fn waveform_emits_once_per_emit_window() {
+        let mut waveform = Waveform::new();
+        let packet = sine(160, 0.1);
+        let mut frames = Vec::new();
+        for i in 1..=20 {
+            if let Some(bars) = waveform.push(&packet, packet.len()) {
+                assert!(bars.len() <= WAVEFORM_BARS);
+                frames.push(i);
+            }
+        }
+        // 160-sample packets cross a 1024-sample boundary on packets 7, 13 and 20.
+        assert_eq!(frames, vec![7, 13, 20]);
+    }
+
+    #[test]
+    fn waveform_keeps_the_last_bars() {
+        let mut waveform = Waveform::new();
+        for _ in 0..WAVEFORM_BARS + 5 {
+            assert!(waveform.push(&[0; 10], 10).is_none());
+        }
+        let bars = waveform.push(&sine(100, 0.1), WAVEFORM_EMIT_SAMPLES).unwrap();
+        assert_eq!(bars.len(), WAVEFORM_BARS);
+        assert_eq!(bars[..WAVEFORM_BARS - 1], [0.0; WAVEFORM_BARS - 1]);
+        assert!(waveform.push(&[0; 10], 10).is_none());
+    }
+
+    #[test]
+    fn waveform_scales_a_sine_by_root_rms() {
+        let mut waveform = Waveform::new();
+        let bars = waveform.push(&sine(1600, 0.1), WAVEFORM_EMIT_SAMPLES).unwrap();
+        // RMS 0.1/sqrt(2) -> sqrt -> x2
+        let expected = ((0.1f32 / 2f32.sqrt()).sqrt() * 2.0).clamp(0.0, 1.0);
+        assert_eq!(bars.len(), 1);
+        assert!((bars[0] - expected).abs() < 0.01, "{} vs {}", bars[0], expected);
+        let loud = waveform.push(&sine(1600, 0.9), WAVEFORM_EMIT_SAMPLES).unwrap();
+        assert_eq!(loud, vec![1.0]);
+    }
 }

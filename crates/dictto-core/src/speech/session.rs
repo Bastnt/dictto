@@ -1,8 +1,9 @@
+use crate::events;
 use super::Action;
 use crate::dictation::{emit_state, send_speech, BarAction};
-use crate::host::{self as tauri, AppHandle, Emitter, Manager};
+use crate::host::{self, AppHandle, Emitter, Manager};
 
-type AsyncJoinHandle = tauri::async_runtime::JoinHandle<()>;
+type AsyncJoinHandle = host::async_runtime::JoinHandle<()>;
 
 /// Speech event routed through the dictation loop so it is ordered with key events.
 pub(crate) enum Message {
@@ -71,7 +72,7 @@ struct SpeechSession {
 fn speech_result(app: &AppHandle, result: Result<(), String>) {
     emit_state(app, "idle", None);
     if let Err(message) = result {
-        let _ = app.emit("speech-error", serde_json::json!({"message":message}));
+        let _ = app.emit(events::SPEECH_ERROR, serde_json::json!({"message":message}));
     }
 }
 
@@ -92,7 +93,7 @@ impl SpeechSession {
             }
         };
         emit_state(app, "recording", Some("continuous"));
-        let task = tauri::async_runtime::spawn(async move {
+        let task = host::async_runtime::spawn(async move {
             tokio::time::sleep(duration).await;
             send_speech(Message::Limit(id));
         });
@@ -111,7 +112,7 @@ impl SpeechSession {
     ) -> Self {
         emit_state(app, "processing", None);
         let app = app.clone();
-        let task = tauri::async_runtime::spawn(async move {
+        let task = host::async_runtime::spawn(async move {
             let result = action.run(app, audio).await;
             send_speech(Message::Done(id, result));
         });

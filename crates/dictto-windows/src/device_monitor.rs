@@ -1,7 +1,8 @@
-use dictto_core::host as tauri;
+use dictto_core::events;
+use dictto_core::host;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::Emitter;
+use host::Emitter;
 
 pub use dictto_core::audio::{DeviceMonitorState, DeviceSelection};
 
@@ -47,7 +48,7 @@ const PKEY_FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY {
 #[implement(IMMNotificationClient)]
 struct DeviceChangeNotifier {
     state: Arc<DeviceMonitorState>,
-    app_handle: tauri::AppHandle,
+    app_handle: host::AppHandle,
 }
 
 #[cfg(windows)]
@@ -85,7 +86,7 @@ impl IMMNotificationClient_Impl for DeviceChangeNotifier_Impl {
             }
         }
         self.state.devices_changed.store(true, Ordering::Release);
-        let _ = self.app_handle.emit("audio-devices-changed", ());
+        let _ = self.app_handle.emit(events::AUDIO_DEVICES_CHANGED, ());
         Ok(())
     }
 
@@ -97,7 +98,7 @@ impl IMMNotificationClient_Impl for DeviceChangeNotifier_Impl {
         // Intentionally no log — Windows fires 10-20 of these per physical device change.
         // OnDefaultDeviceChanged (logged above) is the actionable event.
         self.state.devices_changed.store(true, Ordering::Release);
-        let _ = self.app_handle.emit("audio-devices-changed", ());
+        let _ = self.app_handle.emit(events::AUDIO_DEVICES_CHANGED, ());
         Ok(())
     }
 
@@ -105,7 +106,7 @@ impl IMMNotificationClient_Impl for DeviceChangeNotifier_Impl {
         let id = unsafe { pwstrdeviceid.to_string().unwrap_or_default() };
         log::debug!("[DeviceMonitor] OnDeviceAdded: {}", id);
         self.state.devices_changed.store(true, Ordering::Release);
-        let _ = self.app_handle.emit("audio-devices-changed", ());
+        let _ = self.app_handle.emit(events::AUDIO_DEVICES_CHANGED, ());
         Ok(())
     }
 
@@ -113,7 +114,7 @@ impl IMMNotificationClient_Impl for DeviceChangeNotifier_Impl {
         let id = unsafe { pwstrdeviceid.to_string().unwrap_or_default() };
         log::debug!("[DeviceMonitor] OnDeviceRemoved: {}", id);
         self.state.devices_changed.store(true, Ordering::Release);
-        let _ = self.app_handle.emit("audio-devices-changed", ());
+        let _ = self.app_handle.emit(events::AUDIO_DEVICES_CHANGED, ());
         Ok(())
     }
 
@@ -236,7 +237,7 @@ fn read_initial_default(enumerator: &IMMDeviceEnumerator) -> (Option<String>, St
 #[cfg(windows)]
 pub fn spawn(
     state: Arc<DeviceMonitorState>,
-    app_handle: tauri::AppHandle,
+    app_handle: host::AppHandle,
 ) -> std::sync::mpsc::Sender<()> {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<()>();
 
@@ -255,7 +256,7 @@ pub fn spawn(
 #[cfg(windows)]
 fn monitor_thread_main(
     state: Arc<DeviceMonitorState>,
-    app_handle: tauri::AppHandle,
+    app_handle: host::AppHandle,
     shutdown_rx: std::sync::mpsc::Receiver<()>,
 ) -> std::result::Result<(), String> {
     unsafe {

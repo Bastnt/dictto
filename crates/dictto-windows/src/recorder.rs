@@ -1,23 +1,15 @@
-use dictto_core::host as tauri;
+use dictto_core::host;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
-use tauri::Emitter;
 
 pub use dictto_core::audio::AudioError;
 use dictto_core::audio::dsp::{
-    encode_wav, has_speech, resample, to_mono_i16, to_mono_i16_f32, CHANNELS, SAMPLE_RATE,
-    SILENCE_RMS_THRESHOLD,
+    finish, resample, to_mono_i16, to_mono_i16_f32, Waveform, CHANNELS, SAMPLE_RATE,
 };
+use dictto_core::audio::emit_waveform;
 use dictto_core::audio::MicrophoneInfo;
 use crate::device_monitor::playback_generation;
 use dictto_core::audio::DeviceSelection;
-
-/// Emit waveform data every ~64ms (1024 samples at 16kHz)
-const WAVEFORM_EMIT_SAMPLES: usize = 1024;
-/// Number of amplitude bars the frontend expects
-const WAVEFORM_BARS: usize = 24;
-/// Minimum samples to consider a valid recording (~0.3s at 16kHz)
-const MIN_RECORDING_SAMPLES: usize = 4800;
 
 /// Commands sent from WindowsRecorder to the persistent capture thread.
 enum CaptureCmd {
@@ -50,8 +42,8 @@ pub struct WindowsRecorder {
     result_rx: Option<mpsc::Receiver<CaptureResult>>,
     /// Handle to the capture thread for joining on shutdown.
     capture_thread: Option<JoinHandle<()>>,
-    /// Tauri app handle for waveform event emission (cloned into thread).
-    app_handle: Option<tauri::AppHandle>,
+    /// Host handle for waveform event emission (cloned into thread).
+    app_handle: Option<host::AppHandle>,
     /// Track whether we're currently recording (for is_recording() API).
     recording: bool,
     /// The device name the current thread was initialized with.
@@ -71,7 +63,7 @@ impl WindowsRecorder {
         }
     }
 
-    pub fn set_app_handle(&mut self, handle: tauri::AppHandle) {
+    pub fn set_app_handle(&mut self, handle: host::AppHandle) {
         self.app_handle = Some(handle);
     }
 
@@ -249,21 +241,7 @@ impl WindowsRecorder {
                     SAMPLE_RATE,
                 );
 
-                if samples.len() < MIN_RECORDING_SAMPLES {
-                    return Err(AudioError::EmptyRecording);
-                }
-
-                let (speech_detected, peak_rms) = has_speech(&samples);
-                log::debug!(
-                    "[WindowsRecorder] Speech detection — peak RMS: {:.1}, threshold: {:.1}, detected: {}",
-                    peak_rms, SILENCE_RMS_THRESHOLD, speech_detected
-                );
-
-                if !speech_detected {
-                    return Err(AudioError::EmptyRecording);
-                }
-
-                encode_wav(&samples)
+                finish(&samples)
             }
             Ok(CaptureResult::Error(msg, alive)) => {
                 log::error!("[WindowsRecorder] Stop failed: {}", msg);
@@ -333,7 +311,7 @@ fn capture_thread_main(
     device: DeviceSelection,
     cmd_rx: mpsc::Receiver<CaptureCmd>,
     result_tx: mpsc::Sender<CaptureResult>,
-    app_handle: Option<tauri::AppHandle>,
+    app_handle: Option<host::AppHandle>,
 ) {
     match capture_thread_inner(&device, &cmd_rx, &result_tx, &app_handle) {
         Ok(()) => log::info!("[WindowsRecorder] Capture thread exiting cleanly"),
@@ -349,7 +327,7 @@ fn capture_thread_inner(
     device: &DeviceSelection,
     cmd_rx: &mpsc::Receiver<CaptureCmd>,
     result_tx: &mpsc::Sender<CaptureResult>,
-    app_handle: &Option<tauri::AppHandle>,
+    app_handle: &Option<host::AppHandle>,
 ) -> Result<(), AudioError> {
     use windows::Win32::Foundation::PROPERTYKEY;
     use windows::Win32::Media::Audio::{IAudioCaptureClient, IAudioClient};
@@ -693,14 +671,13 @@ unsafe fn capture_loop(
     render_generation: Option<u64>,
     cmd_rx: &mpsc::Receiver<CaptureCmd>,
     result_tx: &mpsc::Sender<CaptureResult>,
-    app_handle: &Option<tauri::AppHandle>,
+    app_handle: &Option<host::AppHandle>,
     sample_buffer: &mut Vec<i16>,
 ) -> bool {
     let loopback = render_generation.is_some();
     sample_buffer.clear();
 
-    let mut amplitude_buf: Vec<f32> = Vec::new();
-    let mut sample_count: usize = 0;
+    let mut waveform = Waveform::new();
     let mut loop_iterations: u64 = 0;
     let mut total_packets: u64 = 0;
     let mut silent_packets: u64 = 0;
@@ -844,48 +821,13 @@ unsafe fn capture_loop(
                     to_mono_i16(i16_slice, device_channels as usize)
                 };
 
-                // Compute waveform amplitude
-                let rms = if !samples.is_empty() {
-                    let sum: f32 = samples
-                        .iter()
-                        .map(|&s| {
-                            let f = s as f32 / i16::MAX as f32;
-                            f * f
-                        })
-                        .sum();
-                    (sum / samples.len() as f32).sqrt()
-                } else {
-                    0.0
-                };
-                let scaled = (rms.sqrt() * 2.0).clamp(0.0, 1.0);
-                amplitude_buf.push(scaled);
-
-                // Resample to 16kHz if needed
-                let resampled = if device_sample_rate != SAMPLE_RATE {
-                    resample(&samples, device_sample_rate, SAMPLE_RATE)
-                } else {
-                    samples
-                };
-
-                sample_buffer.extend_from_slice(&resampled);
-
-                // Emit waveform data periodically
-                let prev = sample_count;
-                sample_count += resampled.len();
-
-                if prev / WAVEFORM_EMIT_SAMPLES < sample_count / WAVEFORM_EMIT_SAMPLES {
-                    if let Some(ref handle) = app_handle {
-                        let amplitudes: Vec<f32> = if amplitude_buf.len() >= WAVEFORM_BARS {
-                            amplitude_buf[amplitude_buf.len() - WAVEFORM_BARS..].to_vec()
-                        } else {
-                            amplitude_buf.clone()
-                        };
-                        let _ = handle.emit(
-                            "waveform-data",
-                            serde_json::json!({ "amplitudes": amplitudes }),
-                        );
-                        amplitude_buf.clear();
-                    }
+                let resampled = (device_sample_rate != SAMPLE_RATE)
+                    .then(|| resample(&samples, device_sample_rate, SAMPLE_RATE));
+                let resampled = resampled.as_deref().unwrap_or(&samples);
+                let bars = waveform.push(&samples, resampled.len());
+                sample_buffer.extend_from_slice(resampled);
+                if let (Some(bars), Some(handle)) = (bars, app_handle) {
+                    emit_waveform(handle, bars);
                 }
             }
 
@@ -1156,7 +1098,7 @@ unsafe fn get_form_factor(
 }
 
 impl dictto_core::platform::Recorder for WindowsRecorder {
-    fn set_app_handle(&mut self, app: tauri::AppHandle) {
+    fn set_app_handle(&mut self, app: host::AppHandle) {
         WindowsRecorder::set_app_handle(self, app)
     }
     fn start(&mut self, device: DeviceSelection) -> Result<(), AudioError> {
@@ -1178,6 +1120,7 @@ impl dictto_core::platform::Recorder for WindowsRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dictto_core::audio::dsp::{encode_wav, has_speech};
 
     #[test]
     fn only_directly_read_known_pcm_and_float_layouts() {
