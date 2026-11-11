@@ -21,3 +21,13 @@ pub enum InjectionError {
 pub trait TextInjector: Send + Sync {
     async fn inject(&self, text: &str, paste_delay_ms: u64) -> Result<std::time::Instant, InjectionError>;
 }
+
+#[derive(Debug, Clone, Copy)]
+pub enum Sound {
+    Start,
+    Stop,
+}
+
+pub trait Sounds: Send + Sync {
+    fn play(&self, sound: Sound);
+}

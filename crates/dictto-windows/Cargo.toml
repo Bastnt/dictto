@@ -7,3 +7,4 @@ description = "Windows platform services shared by the Dictto apps"
 [dependencies]
 dictto-core = { path = "../dictto-core" }
 keyring = { version = "3", features = ["windows-native"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

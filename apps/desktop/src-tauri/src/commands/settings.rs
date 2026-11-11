@@ -24,7 +24,7 @@ pub fn set_setting(
         let db = state.db.lock().map_err(|e| e.to_string())?;
         db.set_setting(&key, &value).map_err(|e| e.to_string())?;
     } // db lock released here
-    if let Some(chord) = hotkey { crate::services::hotkey::configure(chord); }
+    if let Some(chord) = hotkey { dictto_core::dictation::configure(chord); }
 
     // Handle auto-start toggle
     if key == "auto_start" {

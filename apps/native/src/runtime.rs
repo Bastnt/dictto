@@ -78,9 +78,9 @@ impl NativeRuntime {
         if self.inner.started.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        if let Err(error) = services::hotkey::register_hotkey(&self.inner.app) {
+        if let Err(error) = self.start_dictation(&settings) {
             self.inner.started.store(false, Ordering::Release);
-            return Err(error.to_string());
+            return Err(error);
         }
         #[cfg(windows)]
         {
@@ -97,6 +97,16 @@ impl NativeRuntime {
         }
         dictto_core::warmup::schedule(&self.inner.app);
         Ok(())
+    }
+    fn start_dictation(&self, settings: &HashMap<String, String>) -> Result<(), String> {
+        crate::speech::configure(crate::speech::parse_bindings(settings, false)?);
+        dictto_core::dictation::set_speech_hooks(Box::<crate::speech::session::Hooks>::default());
+        dictto_core::dictation::start(
+            &self.inner.app,
+            Arc::new(services::injector::ClipboardInjector),
+            Arc::new(services::sound::WindowsSounds),
+        )?;
+        dictto_windows::keyboard::install()
     }
     pub fn speech_audio_dir(&self) -> PathBuf {
         self.inner.state.speech_audio_dir.clone()
@@ -140,7 +150,7 @@ impl NativeRuntime {
                 crate::speech::configure(bindings);
             }
             if let Some(chord) = chord {
-                services::hotkey::configure(chord);
+                dictto_core::dictation::configure(chord);
             }
         }
         if key == "tts_virtual_mic" {
@@ -207,16 +217,16 @@ impl NativeRuntime {
         self.inner.state.device_monitor.get_device_name()
     }
     pub fn set_hotkey_capture(&self, active: bool) {
-        services::hotkey::set_hotkey_capture(active);
+        dictto_core::dictation::set_capture(active);
     }
     pub fn start_recording(&self) {
-        services::hotkey::send_bar_start();
+        dictto_core::dictation::bar_start();
     }
     pub fn stop_recording(&self) {
-        services::hotkey::send_bar_stop();
+        dictto_core::dictation::bar_stop();
     }
     pub fn cancel_recording(&self) {
-        services::hotkey::send_bar_cancel();
+        dictto_core::dictation::bar_cancel();
     }
     fn report_route_error(&self, error: String) {
         log::error!("Communications microphone recovery: {error}");

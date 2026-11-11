@@ -418,6 +418,7 @@ pub(crate) mod cache;
 mod communications;
 mod playback;
 mod render;
+pub(crate) mod session;
 pub(crate) mod virtual_mic;
 
 #[cfg(test)]

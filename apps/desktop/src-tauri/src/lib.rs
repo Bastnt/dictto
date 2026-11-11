@@ -113,7 +113,12 @@ pub fn run() {
 
             dictto_core::warmup::schedule(&core);
             tray::setup_tray(app)?;
-            services::hotkey::register_hotkey(&core)?;
+            dictto_core::dictation::start(
+                &core,
+                std::sync::Arc::new(services::injector::ClipboardInjector),
+                std::sync::Arc::new(services::sound::WindowsSounds),
+            )?;
+            dictto_windows::keyboard::install()?;
 
             // Create recording bar overlay window
             let monitor = app
