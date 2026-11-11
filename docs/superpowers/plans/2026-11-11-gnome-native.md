@@ -11,6 +11,20 @@
 **Spec:** `docs/superpowers/specs/2026-11-11-shared-core-gnome-design.md`
 **Depends on:** `docs/superpowers/plans/2026-11-11-shared-core-extraction.md` (complete first). Uses `dictto_core::{Runtime, Platform, host::AppHandle, keys::Key, dictation::key_event, platform::{Recorder, TextInjector, Sounds, Devices}, speech::{SpeechPlatform, Player, Defaults, SelectionReader}, audio::dsp}` exactly as defined there.
 
+## Amendments from the completed core extraction (binding; supersede task text below)
+
+The core landed with these exact interfaces (read the code in `crates/dictto-core` before each task):
+
+- `dictto_core::Runtime::with_speech(data_dir: PathBuf, platform: Platform, speech: SpeechPlatform, sink: impl Fn(&str, serde_json::Value) + Send + Sync + 'static) -> Result<Runtime, String>` (feature `speech`); `Runtime::new` is the no-speech variant. `start`, `shutdown`, `session_changed(suspended)`, `set_setting`, `get_setting`, `get_settings`, `microphones`, `set_hotkey_capture`, `start_recording`/`stop_recording`/`cancel_recording`, `discover_speech_models`, key accessors.
+- `Platform { injector: Arc<dyn TextInjector>, sounds: Arc<dyn Sounds>, devices: Arc<dyn Devices>, services: Arc<dyn Services>, new_recorder: Arc<dyn Fn() -> Box<dyn Recorder> + Send + Sync> }`. `Services { set_autostart(bool), install_input() (must fail without side effects; called once), spawn_device_monitor(state, app) -> mpsc::Sender<()> }`. So: the evdev keyboard (Task 2) is started from `Services::install_input`; the PipeWire device monitor (Task 3) from `spawn_device_monitor`; autostart (Task 6) from `set_autostart`. There is no separate recorder field: `new_recorder` builds it.
+- `dictto_core::dictation::key_event(source: u16, key: Option<Key>, down: bool) -> bool`: pass the evdev code as `source`, `keymap::from_evdev(code)` as `key`, also for unmapped keys (`None`). Ignore the returned bool (evdev cannot swallow).
+- `SpeechPlatform { player: Arc<dyn Player + Send>, virtual_mic: Arc<dyn VirtualMic>, mic_route: Arc<dyn MicRouteControl>, selection: Arc<dyn SelectionReader>, cache_files: cache::CacheFiles }`. Virtual-mic policy (journal, manual-change-wins polling, restore, session suspend) is already in core: `speech::virtual_mic::{MicRoute::new(journal, defaults, output), virtual_mic(&route)}` generic over `route::Defaults` (implement `system_name()`/`input_name()` with Linux wording, e.g. "PipeWire" / "default microphone") and `MicOutput { ensure_present, locate, wait_ready, play }`. Task 8 implements only `PipewireDefaults: Defaults` and `PipewireMicOutput: MicOutput`; `wait_ready` is the up-to-8-second wait for a link to `dictto_microphone`. Do not re-implement route rules.
+- `cache::CacheFiles::default()` is correct for Linux.
+- `keyring` in core has no backend: `apps/gnome` must enable a Secret Service backend feature on its own `keyring` dependency (same major version as core) or keys silently go to the mock store. Add a test that the enabled backend is not the mock (e.g. `keyring::default::default_credential_builder()` type name / `keyring` API for the active builder).
+- Root workspace has `[profile.release.package.dictto-core] codegen-units = 1` and the same for `dictto-windows`.
+- `.github/workflows/core.yml` exists (jobs `core-linux`, `workspace-windows`); Task 10 extends it. `apps/gnome` must compile as a stub on Windows so `cargo test --workspace` there keeps passing.
+- `pnpm` is not available locally; WSL Ubuntu 26.04 has rustup, GTK 4.22, libadwaita 1.9, PipeWire 1.6, gjs 1.88, jq, shellcheck, dbus. Build with `CARGO_TARGET_DIR=$HOME/dictto-target` (never write Linux output into the repo `target/`).
+
 ## Global Constraints
 
 - Written on Windows; compiled and unit-tested in WSL Ubuntu (`wsl -d Ubuntu`, repo at `/mnt/d/Bastnt/projets/dictto`); validated later on the owner's Fedora by a Claude CLI session. Every task ends with a WSL build + test, never with a claim that GNOME behaviour works.
