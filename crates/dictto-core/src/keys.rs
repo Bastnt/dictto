@@ -15,7 +15,8 @@ impl Key {
         matches!(self, Key::Ctrl | Key::Alt | Key::Shift | Key::Super)
     }
 
-    /// Stable id used as the source of an event when the caller does not distinguish sides.
+    /// Test-only source id; production callers pass real platform key codes.
+    #[cfg(test)]
     fn id(self) -> u16 {
         match self {
             Key::Ctrl => 0, Key::Alt => 1, Key::Shift => 2, Key::Super => 3,
@@ -59,9 +60,9 @@ impl Chord {
                 "SPACE" => Key::Space, "ENTER" => Key::Enter, "TAB" => Key::Tab, "BACKSPACE" => Key::Backspace,
                 _ if token.len() == 1 && token.as_bytes()[0].is_ascii_alphanumeric() => Key::Char(token.as_bytes()[0]),
                 _ if token.starts_with('F') => {
-                    let n: u8 = token[1..].parse().map_err(|_| "Unsupported shortcut key")?;
+                    let n: u16 = token[1..].parse().map_err(|_| "Unsupported shortcut key")?;
                     if !(1..=24).contains(&n) { return Err("Use F1 through F24".into()); }
-                    Key::F(n)
+                    Key::F(n as u8)
                 }
                 _ => return Err(format!("Unsupported shortcut key: {part}")),
             };
@@ -99,11 +100,12 @@ impl Tracker {
         active.then_some(false)
     }
 
-    pub fn event(&mut self, key: Key, down: bool) -> Option<bool> {
+    #[cfg(test)]
+    fn event(&mut self, key: Key, down: bool) -> Option<bool> {
         self.event_from(key.id(), key, down)
     }
 
-    /// `source` identifies the physical key (e.g. the raw scancode) when several
+    /// `source` identifies the physical key (the platform key code) when several
     /// physical keys share one `Key`.
     pub fn event_from(&mut self, source: u16, key: Key, down: bool) -> Option<bool> {
         if self.suspended { return None; }
@@ -165,6 +167,7 @@ mod tests {
     #[test]
     fn error_messages_are_unchanged() {
         assert_eq!(Chord::parse("F25").unwrap_err(), "Use F1 through F24");
+        assert_eq!(Chord::parse("F300").unwrap_err(), "Use F1 through F24");
         assert_eq!(Chord::parse("Ctrl+Ctrl").unwrap_err(), "Duplicate shortcut key");
         assert_eq!(Chord::parse("Ctrl+Bar").unwrap_err(), "Unsupported shortcut key: Bar");
         assert_eq!(Chord::parse("Ctrl").unwrap_err(), "Use modifiers with one key, two modifiers, or a function key");
