@@ -1,6 +1,6 @@
 //! Platform-neutral core shared by the Dictto apps.
 pub mod audio;
-pub mod chord;
+pub mod keys;
 pub mod db;
 pub mod host;
 pub mod llm;

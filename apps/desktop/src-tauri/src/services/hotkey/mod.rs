@@ -5,15 +5,15 @@ use tauri::Manager;
 use crate::services::audio::device_monitor::DeviceSelection;
 use crate::services::sound::{play_sound, Sound};
 use dictto_core::pipeline::RecordedAudio;
-pub use dictto_core::chord;
+pub use dictto_core::keys;
 #[cfg(not(feature = "tauri-host"))]
 mod speech_session;
 #[cfg(not(feature = "tauri-host"))]
 use speech_session::{speech_result, SpeechSession};
-static TRACKER: OnceLock<Mutex<chord::Tracker>> = OnceLock::new();
+static TRACKER: OnceLock<Mutex<keys::Tracker>> = OnceLock::new();
 
-fn tracker() -> &'static Mutex<chord::Tracker> {
-    TRACKER.get_or_init(|| Mutex::new(chord::Tracker::default()))
+fn tracker() -> &'static Mutex<keys::Tracker> {
+    TRACKER.get_or_init(|| Mutex::new(keys::Tracker::default()))
 }
 
 fn send_transition(transition: Option<bool>) {
@@ -22,7 +22,7 @@ fn send_transition(transition: Option<bool>) {
     }
 }
 
-pub fn configure(value: chord::Chord) {
+pub fn configure(value: keys::Chord) {
     let mut tracker = tracker().lock().unwrap();
     send_transition(tracker.reset());
     tracker.chord = value;
@@ -86,7 +86,10 @@ unsafe extern "system" fn hook_proc(
         let is_up = wparam.0 == WM_KEYUP as usize || wparam.0 == WM_SYSKEYUP as usize;
 
         if is_down || is_up {
-            send_transition(tracker().lock().unwrap().event(vk, is_down));
+            // Unmapped keys never affect a chord, so they are skipped.
+            if let Some(key) = dictto_windows::keymap::from_vk(vk) {
+                send_transition(tracker().lock().unwrap().event_from(vk, key, is_down));
+            }
             #[cfg(not(feature = "tauri-host"))]
             {
                 let (action, suppress) = crate::speech::key_event(vk, is_down);
@@ -282,7 +285,7 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
     #[cfg(not(feature = "tauri-host"))]
     crate::speech::configure(crate::speech::parse_bindings(&state.db.lock().unwrap().get_all_settings()?, false)?);
     let value = state.db.lock().unwrap().get_setting("hotkey").unwrap_or_else(|| "Ctrl+Win".into());
-    configure(chord::Chord::parse(&value).unwrap_or_else(|_| chord::Chord::parse("Ctrl+Win").unwrap()));
+    configure(keys::Chord::parse(&value).unwrap_or_else(|_| keys::Chord::parse("Ctrl+Win").unwrap()));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HotkeyEvent>();
 
     #[cfg(windows)]

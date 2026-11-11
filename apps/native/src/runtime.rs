@@ -112,7 +112,7 @@ impl NativeRuntime {
     }
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
         let chord = if key == "hotkey" {
-            Some(dictto_core::chord::Chord::parse(value)?)
+            Some(dictto_core::keys::Chord::parse(value)?)
         } else {
             None
         };

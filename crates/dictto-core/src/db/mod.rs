@@ -122,7 +122,7 @@ impl Database {
     }
 
     fn ensure_speech_shortcuts(&self) -> Result<(), DbError> {
-        use crate::chord::Chord;
+        use crate::keys::Chord;
 
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)?;
         let settings = self.get_all_settings()?;
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn speech_binding_upgrade_preserves_user_chords_and_avoids_subset_conflicts() {
-        use crate::chord::Chord;
+        use crate::keys::Chord;
         let db = Database::new_in_memory().unwrap();
         db.conn.execute("DELETE FROM settings WHERE key='speech_shortcuts_initialized_v1'", []).unwrap();
         for (key, _) in settings::SPEECH_SHORTCUTS {

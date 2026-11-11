@@ -1,6 +1,6 @@
 use crate::host::{AppHandle, Manager};
 use dictto_core::audio::DeviceSelection;
-use dictto_core::chord::{Chord, Tracker};
+use dictto_core::keys::{Chord, Tracker};
 use dictto_core::transcription::{
     openai_api::OpenAIWhisper, TranscriptionConfig, TranscriptionEngine,
 };
@@ -89,8 +89,10 @@ pub(crate) fn parse_bindings(
 impl Shortcuts {
     fn event(&mut self, vk: u16, down: bool) -> (Option<Action>, bool) {
         let mut hit = None;
+        let key = dictto_windows::keymap::from_vk(vk);
         for (action, tracker) in &mut self.bindings {
-            if tracker.event(vk, down) == Some(true) && hit.is_none() {
+            let transition = key.and_then(|key| tracker.event_from(vk, key, down));
+            if transition == Some(true) && hit.is_none() {
                 hit = Some(*action);
             }
         }

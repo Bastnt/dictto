@@ -18,7 +18,7 @@ pub fn set_setting(
     state: State<'_, Arc<CoreState>>,
 ) -> Result<(), String> {
     let hotkey = if key == "hotkey" {
-        Some(dictto_core::chord::Chord::parse(&value)?)
+        Some(dictto_core::keys::Chord::parse(&value)?)
     } else { None };
     {
         let db = state.db.lock().map_err(|e| e.to_string())?;
