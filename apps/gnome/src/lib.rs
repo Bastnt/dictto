@@ -21,11 +21,25 @@ pub mod session;
 #[cfg(target_os = "linux")]
 pub mod speech;
 
+/// Linux appends " (deleted)" to /proc/self/exe once the running binary was replaced by an
+/// install; the path itself still names the freshly installed file.
+pub fn strip_deleted_suffix(path: &std::path::Path) -> std::path::PathBuf {
+    match path.to_str().and_then(|p| p.strip_suffix(" (deleted)")) {
+        Some(clean) => std::path::PathBuf::from(clean),
+        None => path.to_path_buf(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn current_exe() -> std::io::Result<std::path::PathBuf> {
+    std::env::current_exe().map(|p| strip_deleted_suffix(&p))
+}
+
 /// GTK and libadwaita live in this sibling binary: linked here, they would be mapped
 /// into the always-running daemon.
 #[cfg(target_os = "linux")]
 pub fn settings_command() -> Result<std::process::Command, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("cannot locate the dictto-gnome binary: {e}"))?;
+    let exe = current_exe().map_err(|e| format!("cannot locate the dictto-gnome binary: {e}"))?;
     Ok(std::process::Command::new(exe.with_file_name("dictto-gnome-settings")))
 }
 
@@ -75,5 +89,20 @@ mod tests {
         use keyring::credential::CredentialPersistence;
         let builder = keyring::default::default_credential_builder();
         assert!(matches!(builder.persistence(), CredentialPersistence::UntilDelete));
+    }
+}
+
+#[cfg(test)]
+mod exe_path_tests {
+    use super::strip_deleted_suffix;
+    use std::path::Path;
+
+    #[test]
+    fn deleted_suffix_is_stripped() {
+        assert_eq!(
+            strip_deleted_suffix(Path::new("/home/u/.local/bin/dictto-gnome (deleted)")),
+            Path::new("/home/u/.local/bin/dictto-gnome")
+        );
+        assert_eq!(strip_deleted_suffix(Path::new("/usr/bin/dictto-gnome")), Path::new("/usr/bin/dictto-gnome"));
     }
 }

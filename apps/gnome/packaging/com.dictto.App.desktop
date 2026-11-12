@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Dictto
+Comment=Voice dictation
+Exec=@BIN@/dictto-gnome --settings
+Icon=com.dictto.App
+Terminal=false
+Categories=Utility;AudioVideo;
+StartupWMClass=com.dictto.App

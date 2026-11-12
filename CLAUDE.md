@@ -54,6 +54,8 @@ apps/
 └── native/src/               # Win32 variant: ui*.rs, overlay.rs, main.rs
 ```
 
+Fedora GNOME (Wayland) port: `apps/gnome` is the daemon `dictto-gnome` (D-Bus `com.dictto.App`), `apps/gnome-settings` the GTK4/libadwaita `dictto-gnome-settings`, `apps/gnome/extension` the Shell extension. Install with `scripts/install-gnome.sh`; bring-up checklist in `apps/gnome/FEDORA-BRINGUP.md`.
+
 ### Key Traits
 
 - `Platform` — OS services the core calls (`dictto_windows::platform()`); a new OS supplies its own

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds and tests the GNOME app on Linux (WSL Ubuntu or Fedora). Never writes into the repo target/.
+# Builds and tests the GNOME app on Ubuntu/WSL only (dpkg; Fedora uses the dnf list in
+# apps/gnome/FEDORA-BRINGUP.md). Never writes into the repo target/.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

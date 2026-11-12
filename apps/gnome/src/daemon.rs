@@ -284,7 +284,7 @@ impl GnomeServices {
 impl Services for GnomeServices {
     fn set_autostart(&self, enabled: bool) -> Result<(), String> {
         if enabled {
-            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let exe = crate::current_exe().map_err(|e| e.to_string())?;
             crate::autostart::enable(&exe)
         } else {
             crate::autostart::disable()
