@@ -1,6 +1,4 @@
 //! Pastes dictated text: the Shell extension owns the clipboard, a uinput keyboard sends Ctrl+V.
-// async_trait on a Result-returning method trips this lint.
-#![allow(clippy::double_must_use)]
 use crate::dbus::shell::ShellProxy;
 use crate::keyboard::VIRTUAL_KEYBOARD_NAME;
 use async_trait::async_trait;
@@ -8,6 +6,7 @@ use dictto_core::platform::{InjectionError, TextInjector};
 use evdev::uinput::VirtualDevice;
 use evdev::{AttributeSet, EventType, InputEvent, KeyCode};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -35,6 +34,7 @@ impl Problem {
 }
 
 #[async_trait]
+#[allow(clippy::double_must_use)]
 pub trait Shell: Send + Sync {
     async fn save_clipboard(&self) -> Result<u32, String>;
     async fn restore_clipboard(&self, token: u32) -> Result<(), String>;
@@ -42,7 +42,10 @@ pub trait Shell: Send + Sync {
 }
 
 #[async_trait]
+#[allow(clippy::double_must_use)]
 pub trait VirtualKeys: Send + Sync {
+    /// Creates the device if needed and lets the compositor register it.
+    async fn prepare(&self) -> Result<(), String>;
     async fn ctrl_v(&self) -> Result<(), String>;
 }
 
@@ -86,13 +89,24 @@ fn key_event(key: KeyCode, value: i32) -> InputEvent {
 
 #[async_trait]
 impl VirtualKeys for UinputKeys {
-    async fn ctrl_v(&self) -> Result<(), String> {
+    async fn prepare(&self) -> Result<(), String> {
         let mut slot = self.device.lock().await;
         if slot.is_none() {
-            *slot = Some(Self::create().map_err(|e| format!("{UINPUT_DENIED}: {e}"))?);
+            // Device creation is a series of blocking ioctls.
+            let device = tokio::task::spawn_blocking(Self::create)
+                .await
+                .map_err(|e| format!("{UINPUT_DENIED}: {e}"))?
+                .map_err(|e| format!("{UINPUT_DENIED}: {e}"))?;
+            *slot = Some(device);
             tokio::time::sleep(DEVICE_SETTLE).await;
         }
-        let device = slot.as_mut().expect("created above");
+        Ok(())
+    }
+
+    async fn ctrl_v(&self) -> Result<(), String> {
+        self.prepare().await?;
+        let mut slot = self.device.lock().await;
+        let device = slot.as_mut().ok_or_else(|| UINPUT_DENIED.to_string())?;
         // emit() appends one SYN_REPORT per call, so each transition is its own frame.
         let chord = [
             (KeyCode::KEY_LEFTCTRL, 1),
@@ -144,14 +158,22 @@ pub struct GnomeInjector<S, K, R> {
     keys: K,
     reporter: R,
     notified: Mutex<HashSet<Problem>>,
+    flagged: AtomicBool,
 }
 
 impl<S: Shell, K: VirtualKeys, R: ProblemReporter> GnomeInjector<S, K, R> {
     pub fn new(shell: S, keys: K, reporter: R) -> Self {
-        Self { shell, keys, reporter, notified: Mutex::new(HashSet::new()) }
+        Self {
+            shell,
+            keys,
+            reporter,
+            notified: Mutex::new(HashSet::new()),
+            flagged: AtomicBool::new(false),
+        }
     }
 
     fn problem(&self, problem: Problem) {
+        self.flagged.store(true, Ordering::Relaxed);
         self.reporter.set_status(Some(problem));
         let first = self.notified.lock().map(|mut set| set.insert(problem)).unwrap_or(false);
         if first {
@@ -164,12 +186,32 @@ impl<S: Shell, K: VirtualKeys, R: ProblemReporter> GnomeInjector<S, K, R> {
         self.problem(Problem::MissingExtension);
         InjectionError::ClipboardError(MISSING_EXTENSION.into())
     }
+
+    fn keyboard_error(&self, error: String) -> InjectionError {
+        self.problem(Problem::UinputDenied);
+        InjectionError::KeyboardError(error)
+    }
+
+    async fn paste(&self, text: &str) -> Result<(), InjectionError> {
+        self.shell.set_text(text).await.map_err(|e| self.shell_error(e))?;
+        self.keys.ctrl_v().await.map_err(|e| self.keyboard_error(e))
+    }
 }
 
 #[async_trait]
 impl<S: Shell, K: VirtualKeys, R: ProblemReporter> TextInjector for GnomeInjector<S, K, R> {
     async fn inject(&self, text: &str, paste_delay_ms: u64) -> Result<Instant, InjectionError> {
-        let token = self.shell.save_clipboard().await.map_err(|e| self.shell_error(e))?;
+        // Device creation and its settle time come first so the text stays on the clipboard briefly.
+        self.keys.prepare().await.map_err(|e| self.keyboard_error(e))?;
+
+        // Like Windows, a failed save only means there is nothing to restore.
+        let token = match self.shell.save_clipboard().await {
+            Ok(token) => Some(token),
+            Err(e) => {
+                log::warn!("Warning: Failed to save clipboard: {e}");
+                None
+            }
+        };
         let pasted = self.paste(text).await;
         let pasted_at = Instant::now();
 
@@ -177,23 +219,17 @@ impl<S: Shell, K: VirtualKeys, R: ProblemReporter> TextInjector for GnomeInjecto
             // Keep the text available until the target application has read it.
             tokio::time::sleep(Duration::from_millis(paste_delay_ms)).await;
         }
-        if let Err(e) = self.shell.restore_clipboard(token).await {
-            log::warn!("Warning: Failed to restore clipboard: {e}");
+        if let Some(token) = token {
+            if let Err(e) = self.shell.restore_clipboard(token).await {
+                log::warn!("Warning: Failed to restore clipboard: {e}");
+            }
         }
 
         pasted?;
-        self.reporter.set_status(None);
+        if self.flagged.swap(false, Ordering::Relaxed) {
+            self.reporter.set_status(None);
+        }
         Ok(pasted_at)
-    }
-}
-
-impl<S: Shell, K: VirtualKeys, R: ProblemReporter> GnomeInjector<S, K, R> {
-    async fn paste(&self, text: &str) -> Result<(), InjectionError> {
-        self.shell.set_text(text).await.map_err(|e| self.shell_error(e))?;
-        self.keys.ctrl_v().await.map_err(|e| {
-            self.problem(Problem::UinputDenied);
-            InjectionError::KeyboardError(e)
-        })
     }
 }
 
