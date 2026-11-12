@@ -1,0 +1,55 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Served by the dictto-gnome daemon: bus name com.dictto.App, object /com/dictto/App,
+     session bus. Clients: the Shell extension (indicator, recording bar) and the GTK
+     settings process. Setting and key errors come back as a string, empty on success. -->
+<node>
+  <interface name="com.dictto.App1">
+    <method name="ShowSettings"/>
+    <method name="Quit"/>
+    <!-- Recording bar buttons: start, stop and paste, discard. -->
+    <method name="BarStart"/>
+    <method name="BarStop"/>
+    <method name="BarCancel"/>
+    <!-- While active the shortcut tracker reports chords for the settings UI instead of
+         triggering dictation. -->
+    <method name="SetHotkeyCapture">
+      <arg name="active" type="b" direction="in"/>
+    </method>
+    <method name="SetSetting">
+      <arg name="key" type="s" direction="in"/>
+      <arg name="value" type="s" direction="in"/>
+      <arg name="error" type="s" direction="out"/>
+    </method>
+    <method name="GetSettings">
+      <arg name="settings" type="a{ss}" direction="out"/>
+    </method>
+    <method name="SaveKey">
+      <arg name="key" type="s" direction="in"/>
+      <arg name="error" type="s" direction="out"/>
+    </method>
+    <method name="RemoveKey">
+      <arg name="error" type="s" direction="out"/>
+    </method>
+    <!-- Masked form of the stored API key, empty when no key is stored or it cannot be read. -->
+    <method name="KeyHint">
+      <arg name="hint" type="s" direction="out"/>
+    </method>
+    <!-- Capture devices: id, name, form factor, is the default. -->
+    <method name="Microphones">
+      <arg name="microphones" type="a(sssb)" direction="out"/>
+    </method>
+    <!-- Asynchronous: the result arrives as Event "speech-catalog" carrying the same
+         generation, so callers can drop stale answers. -->
+    <method name="DiscoverSpeechModels">
+      <arg name="generation" type="t" direction="in"/>
+    </method>
+    <!-- Every core event: name is a dictto_core::events constant, payload_json its JSON. -->
+    <signal name="Event">
+      <arg name="name" type="s"/>
+      <arg name="payload_json" type="s"/>
+    </signal>
+    <!-- "ok" or a user-facing problem (missing permission, missing extension). -->
+    <property name="Status" type="s" access="read"/>
+  </interface>
+</node>

@@ -1,0 +1,26 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Exported by the GNOME Shell extension: bus name com.dictto.Shell, object
+     /com/dictto/Shell, session bus. The daemon is the client; the clipboard is only
+     reachable from inside the compositor on Wayland. -->
+<node>
+  <interface name="com.dictto.Shell1">
+    <!-- Keeps every mimetype's bytes in memory under the returned token. -->
+    <method name="SaveClipboard">
+      <arg name="token" type="u" direction="out"/>
+    </method>
+    <method name="RestoreClipboard">
+      <arg name="token" type="u" direction="in"/>
+    </method>
+    <!-- Replaces the clipboard with plain text. -->
+    <method name="SetText">
+      <arg name="text" type="s" direction="in"/>
+    </method>
+    <!-- which is "clipboard" or "primary". -->
+    <method name="GetText">
+      <arg name="which" type="s" direction="in"/>
+      <arg name="present" type="b" direction="out"/>
+      <arg name="text" type="s" direction="out"/>
+    </method>
+  </interface>
+</node>
