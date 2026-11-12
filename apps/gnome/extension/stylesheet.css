@@ -1,0 +1,28 @@
+/* Colours and the 10px corner (GDI RoundRect 20) come from apps/native/src/overlay.rs;
+   "dark" follows org.gnome.desktop.interface color-scheme like AppsUseLightTheme there. */
+.dictto-pill {
+  border-radius: 10px;
+  background-color: #f4f4f4;
+  color: #202020;
+  font-size: 14px;
+}
+
+.dictto-pill.dark {
+  background-color: #262626;
+  color: #f0f0f0;
+}
+
+/* 80px matches the Windows click zones at each end of the continuous pill. */
+.dictto-pill-button {
+  width: 80px;
+  font-size: 14px;
+  border-radius: 10px;
+}
+
+.dictto-pill-button:hover {
+  background-color: rgba(128, 128, 128, 0.15);
+}
+
+.dictto-pill-message {
+  padding: 4px 12px;
+}

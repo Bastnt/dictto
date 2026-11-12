@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 120 120">
+  <!-- The tray-icon mark from packages/brand without its background; the bars are
+       even-odd holes because symbolic recolouring would fill a mask too. -->
+  <path fill="#bebebe" fill-rule="evenodd" d="M26 16H58C88 16 106 36 106 60C106 84 88 104 58 104H26V16Z M44 40.5A4.5 4.5 0 0 1 53 40.5V79.5A4.5 4.5 0 0 1 44 79.5Z M56 32.5A4.5 4.5 0 0 1 65 32.5V87.5A4.5 4.5 0 0 1 56 87.5Z M68 42.5A4.5 4.5 0 0 1 77 42.5V77.5A4.5 4.5 0 0 1 68 77.5Z"/>
+</svg>
