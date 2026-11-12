@@ -18,8 +18,7 @@ fn main() {
     {
         init_logging();
         let result = match mode {
-            // Task 9 builds the GTK settings window.
-            Mode::Settings => Err("settings not built yet".to_string()),
+            Mode::Settings => open_settings_window(),
             Mode::Daemon | Mode::Autostart | Mode::SmokeTest => dictto_gnome::daemon::run(mode),
         };
         if let Err(error) = result {
@@ -27,6 +26,14 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+/// Replaces this process with the GTK settings binary.
+#[cfg(target_os = "linux")]
+fn open_settings_window() -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    let error = dictto_gnome::settings_command()?.exec();
+    Err(format!("cannot start the settings window: {error}"))
 }
 
 /// Plain lines on stderr. Under systemd (JOURNAL_STREAM set) each line carries the

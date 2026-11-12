@@ -1,0 +1,31 @@
+[package]
+name = "dictto-gnome-settings"
+version = "0.2.0"
+edition = "2021"
+description = "GTK settings window of the native Dictto for Fedora GNOME"
+
+# A separate binary: linking GTK into dictto-gnome would map libgtk and libadwaita into
+# the always-running daemon.
+[[bin]]
+name = "dictto-gnome-settings"
+path = "src/main.rs"
+
+[dependencies]
+dictto-core = { path = "../../crates/dictto-core", features = ["speech"] }
+serde_json = "1"
+log = "0.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+# Same feature set as dictto-gnome: features unify across the workspace, and zbus picks
+# tokio over its own executor whenever the tokio feature is on.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+futures-util = { version = "0.3", default-features = false }
+# For the shared evdev key map: shortcuts are recorded by physical key, as the daemon reads them.
+evdev = "0.13"
+env_logger = { version = "0.11", default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt"] }

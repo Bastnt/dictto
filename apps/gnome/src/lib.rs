@@ -21,6 +21,14 @@ pub mod session;
 #[cfg(target_os = "linux")]
 pub mod speech;
 
+/// GTK and libadwaita live in this sibling binary: linked here, they would be mapped
+/// into the always-running daemon.
+#[cfg(target_os = "linux")]
+pub fn settings_command() -> Result<std::process::Command, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate the dictto-gnome binary: {e}"))?;
+    Ok(std::process::Command::new(exe.with_file_name("dictto-gnome-settings")))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Daemon,

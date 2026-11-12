@@ -166,11 +166,11 @@ where
 /// Spawns the settings process; a second one hands over to the first through its own
 /// GApplication uniqueness. Called on the bus dispatcher, so it only forks.
 fn open_settings() {
-    let exe = match std::env::current_exe() {
-        Ok(exe) => exe,
-        Err(error) => return log::error!("cannot locate the dictto-gnome binary: {error}"),
+    let mut command = match crate::settings_command() {
+        Ok(command) => command,
+        Err(error) => return log::error!("{error}"),
     };
-    match std::process::Command::new(exe).arg("--settings").spawn() {
+    match command.spawn() {
         // Reaped on its own thread so it never lingers as a zombie.
         Ok(mut child) => {
             let _ = std::thread::Builder::new()
