@@ -111,6 +111,7 @@ impl<B: AppBackend> AppService<B> {
     }
 
     /// `owner` is the caller turning capture on; capture ends when it leaves the bus.
+    /// Capture is one flag, so the last caller wins: only its departure is watched.
     fn set_capture(&self, active: bool, owner: Option<(zbus::Connection, OwnedUniqueName)>) {
         self.backend.set_hotkey_capture(active);
         let watch = owner.filter(|_| active).map(|(connection, name)| {

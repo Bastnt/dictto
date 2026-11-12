@@ -103,12 +103,13 @@ pub(crate) fn languages_summary(settings: &Settings) -> String {
     }
 }
 
-/// The selected languages after checking or unchecking one; a new one goes last.
-pub(crate) fn toggle_language(values: &[String], code: &str, on: bool) -> Vec<String> {
-    let mut values: Vec<String> = values.iter().filter(|v| *v != "auto" && *v != code).cloned().collect();
-    if on {
-        values.push(code.into());
-    }
+/// The selected languages after a change in the list, ordered as Windows does: languages
+/// hidden by the search filter keep their place, then the checked visible ones follow in
+/// list order. `visible` and `checked` are in list order.
+pub(crate) fn selected_languages(current: &[String], visible: &[&str], checked: &[&str]) -> Vec<String> {
+    let mut values: Vec<String> =
+        current.iter().filter(|v| *v != "auto" && !visible.contains(&v.as_str())).cloned().collect();
+    values.extend(checked.iter().map(|c| c.to_string()));
     values
 }
 
@@ -452,7 +453,7 @@ mod tests {
         block_on(async {
             persist(&fake, "auto_start", bool_value(true)).await.unwrap();
             persist(&fake, "sound_effects_enabled", bool_value(false)).await.unwrap();
-            let languages = toggle_language(&languages(&stored), "fr", true);
+            let languages = selected_languages(&languages(&stored), &["en", "fr"], &["en", "fr"]);
             persist(&fake, "languages", &languages_value(&languages)).await.unwrap();
             assert_eq!(save_shortcut(&fake, &stored, "hotkey", " ctrl+shift+f8 ").await.unwrap(), "Ctrl+Shift+F8");
         });
@@ -515,10 +516,14 @@ mod tests {
         let auto = settings(&[("languages", r#"["auto"]"#)]);
         assert!(auto_detect(&auto));
         assert_eq!(languages_summary(&auto), "Auto-detect");
-        assert_eq!(toggle_language(&languages(&auto), "fr", true), ["fr"]);
+        assert_eq!(selected_languages(&languages(&auto), &["en", "fr"], &["fr"]), ["fr"]);
         let two = settings(&[("languages", r#"["fr","en"]"#)]);
         assert_eq!(languages_summary(&two), "fr, en");
-        assert_eq!(toggle_language(&languages(&two), "fr", false), ["en"]);
+        assert_eq!(selected_languages(&languages(&two), &["en", "fr"], &["en"]), ["en"]);
+        // Filtered to French: English is hidden and keeps its place ahead of the visible ones.
+        let three = settings(&[("languages", r#"["fr","en","de"]"#)]);
+        assert_eq!(selected_languages(&languages(&three), &["fr"], &["fr"]), ["en", "de", "fr"]);
+        assert_eq!(selected_languages(&languages(&three), &["en", "de", "fr"], &["en", "fr"]), ["en", "fr"]);
         assert!(language_matches("fr", "French", "fren"));
         assert!(language_matches("yue", "Cantonese", "yu"));
         assert!(!language_matches("fr", "French", "german"));

@@ -253,6 +253,34 @@ async fn private_bus_round_trip() {
         }
     };
     tokio::time::timeout(std::time::Duration::from_secs(5), released).await.unwrap();
+
+    let releases = || fake.calls.lock().unwrap().iter().filter(|c| *c == "capture false").count();
+    let settle = || tokio::time::sleep(std::time::Duration::from_millis(300));
+    let client = |connection: zbus::Connection| async move {
+        let proxy = zbus::Proxy::new(&connection, APP_BUS_NAME, APP_PATH, "com.dictto.App1").await.unwrap();
+        (connection, proxy)
+    };
+
+    // A second sender's `true` replaces the first sender's watcher: the first leaving
+    // does not end the second's capture.
+    let (first, first_proxy) = client(zbus::Connection::session().await.unwrap()).await;
+    let (second, second_proxy) = client(zbus::Connection::session().await.unwrap()).await;
+    let () = first_proxy.call("SetHotkeyCapture", &(true,)).await.unwrap();
+    let () = second_proxy.call("SetHotkeyCapture", &(true,)).await.unwrap();
+    let before = releases();
+    drop(first_proxy);
+    first.close().await.unwrap();
+    settle().await;
+    assert_eq!(releases(), before);
+    assert_eq!(*fake.calls.lock().unwrap().last().unwrap(), "capture true");
+
+    // A `false` stops the watcher: leaving afterwards releases nothing more.
+    let () = second_proxy.call("SetHotkeyCapture", &(false,)).await.unwrap();
+    assert_eq!(releases(), before + 1);
+    drop(second_proxy);
+    second.close().await.unwrap();
+    settle().await;
+    assert_eq!(releases(), before + 1);
 }
 
 #[test]

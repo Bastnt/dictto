@@ -75,6 +75,8 @@ pub(super) struct Ui {
     /// Set while widgets are filled from settings, so their change handlers stay quiet.
     updating: Cell<bool>,
     first_presence: Cell<bool>,
+    /// Counts daemon arrivals and departures; a `load` started for an earlier one stops.
+    presence: Cell<u64>,
     screenshots: Option<PathBuf>,
     general: general::Page,
     audio: audio::Page,
@@ -153,6 +155,7 @@ impl Ui {
             field_focus: Cell::new(false),
             updating: Cell::new(false),
             first_presence: Cell::new(true),
+            presence: Cell::new(0),
             screenshots,
             general,
             audio,
@@ -248,8 +251,11 @@ impl Ui {
         };
         *self.client.borrow_mut() = Some(client);
         while let Some(message) = incoming.recv().await {
+            if let Incoming::Present(_) = message {
+                self.presence.set(self.presence.get() + 1);
+            }
             match message {
-                Incoming::Present(true) => spawn(self.clone().load()),
+                Incoming::Present(true) => spawn(self.clone().load(self.presence.get())),
                 Incoming::Present(false) => {
                     self.show_absent();
                     if self.first_presence.replace(false) {
@@ -274,24 +280,37 @@ impl Ui {
         }
     }
 
-    async fn load(self: Rc<Self>) {
+    async fn load(self: Rc<Self>, presence: u64) {
         self.first_presence.set(false);
         let Some(client) = self.client() else { return };
+        let current = || self.presence.get() == presence;
         let mut settings = client.get_settings().await;
         for _ in 0..50 {
-            if !matches!(&settings, Err(error) if error == STARTING) {
+            if !current() || !matches!(&settings, Err(error) if error == STARTING) {
                 break;
             }
             glib::timeout_future(Duration::from_millis(200)).await;
             settings = client.get_settings().await;
         }
+        if !current() {
+            return;
+        }
         match settings {
             Ok(settings) => *self.settings.borrow_mut() = settings,
-            Err(error) => self.set_status(&error),
+            // Pages filled from an empty cache would offer defaults as the saved values.
+            Err(error) => {
+                self.show_absent();
+                self.start.set_sensitive(false);
+                self.absent.set_description(Some(&error));
+                return;
+            }
         }
         self.drafts.borrow_mut().clear();
         self.catalog.borrow_mut().invalidate();
         let status = client.status().await.unwrap_or_default();
+        if !current() {
+            return;
+        }
         self.preview.set(status == PREVIEW);
         if !status.is_empty() && status != "ok" {
             self.set_status(&status);
@@ -303,6 +322,9 @@ impl Ui {
         shortcuts::fill(&self);
         api::refresh_hint(&self).await;
         audio::refresh_microphones(&self).await;
+        if !current() {
+            return;
+        }
         self.root.set_visible_child_name("settings");
         self.switcher.set_visible(true);
         self.update_capture();

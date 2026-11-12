@@ -123,7 +123,9 @@ impl Client {
             });
             tokio::spawn(async move {
                 while let Some(signal) = events.next().await {
-                    if let Ok(args) = signal.args() {
+                    let Ok(args) = signal.args() else { continue };
+                    // The recording bar's frames arrive many times a second; no page uses them.
+                    if args.name != dictto_core::events::WAVEFORM_DATA {
                         let _ = incoming.send(Incoming::Event(args.name, args.payload_json));
                     }
                 }

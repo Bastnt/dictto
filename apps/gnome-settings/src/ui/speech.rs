@@ -220,9 +220,8 @@ pub(super) fn connect(ui: &Rc<Ui>) {
     page.open_folder.connect_clicked(move |_| owner.set_status(&open_audio_folder()));
 }
 
-/// The core keeps samples and generated speech in "Speech Audio" under the data dir.
 fn open_audio_folder() -> String {
-    let folder = crate::paths::data_dir().join("Speech Audio");
+    let folder = crate::paths::data_dir().join(dictto_core::speech::AUDIO_DIR);
     if let Err(error) = std::fs::create_dir_all(&folder) {
         return format!("Could not create the audio folder: {error}");
     }

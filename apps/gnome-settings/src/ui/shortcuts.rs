@@ -17,7 +17,12 @@ impl Page {
     pub fn new() -> Self {
         let group = adw::PreferencesGroup::builder()
             .title("Speech shortcuts")
-            .description("Enter a chord such as Ctrl+Alt+F8. Clear the field to disable it.")
+            // Windows says "Enter a chord such as Ctrl+Alt+F8"; on Linux Ctrl+Alt+F1..F12
+            // switch virtual terminals, and these fields record keys rather than take text.
+            .description(
+                "Press a chord such as Ctrl+Shift+F8. Press Backspace to clear and disable it. \
+                 Keys are named by their US-layout position.",
+            )
             .build();
         let fields = SPEECH_SHORTCUTS
             .iter()
@@ -78,7 +83,8 @@ pub(super) fn field() -> gtk::Entry {
     field
 }
 
-/// GDK hardware keycodes are evdev codes plus 8 under both Wayland and X11.
+/// GDK hardware keycodes are evdev codes plus 8 under both Wayland and X11. The daemon
+/// reads evdev codes, so a key is stored by its US-layout position whatever the layout.
 fn physical_key(keycode: u32) -> Option<Key> {
     crate::keymap::from_evdev(u16::try_from(keycode.checked_sub(8)?).ok()?)
 }
@@ -104,7 +110,7 @@ pub(super) fn record(ui: &Rc<Ui>, field: &gtk::Entry) {
         let (recorder, show) = (recorder.clone(), show.clone());
         keys.connect_key_pressed(move |_, _, keycode, _| {
             let Some(key) = physical_key(keycode) else { return glib::Propagation::Proceed };
-            if key == Key::Tab && !recorder.borrow().holds_modifier() {
+            if key == Key::Tab && !recorder.borrow().holds_shortcut_modifier() {
                 return glib::Propagation::Proceed;
             }
             let result = recorder.borrow_mut().press(key);

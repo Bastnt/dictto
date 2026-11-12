@@ -26,7 +26,8 @@ impl Key {
         }
     }
 
-    fn name(self) -> String {
+    /// The token used in stored shortcuts (`Win` for Super, `F8`, `A`).
+    pub fn name(self) -> String {
         match self {
             Key::Ctrl => "Ctrl".into(), Key::Alt => "Alt".into(), Key::Shift => "Shift".into(),
             Key::Super => "Win".into(), Key::Space => "Space".into(), Key::Enter => "Enter".into(),

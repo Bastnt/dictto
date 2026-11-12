@@ -25,23 +25,8 @@ fn is_modifier(key: Key) -> bool {
     matches!(key, Key::Ctrl | Key::Alt | Key::Shift | Key::Super)
 }
 
-fn token(key: Key) -> String {
-    match key {
-        Key::Ctrl => "Ctrl".into(),
-        Key::Alt => "Alt".into(),
-        Key::Shift => "Shift".into(),
-        Key::Super => "Win".into(),
-        Key::Space => "Space".into(),
-        Key::Enter => "Enter".into(),
-        Key::Tab => "Tab".into(),
-        Key::Backspace => "Backspace".into(),
-        Key::Char(c) => (c as char).to_string(),
-        Key::F(n) => format!("F{n}"),
-    }
-}
-
 fn chord<'a>(keys: impl Iterator<Item = &'a Key>) -> Recorded {
-    let text = keys.map(|k| token(*k)).collect::<Vec<_>>().join("+");
+    let text = keys.map(|k| k.name()).collect::<Vec<_>>().join("+");
     match Chord::parse(&text) {
         Ok(chord) => Recorded::Chord(chord.display()),
         Err(error) => Recorded::Invalid(error),
@@ -49,9 +34,10 @@ fn chord<'a>(keys: impl Iterator<Item = &'a Key>) -> Recorded {
 }
 
 impl ChordRecorder {
-    /// True while a modifier is down, so the caller lets a bare Tab move focus.
-    pub fn holds_modifier(&self) -> bool {
-        self.held.iter().any(|k| is_modifier(*k))
+    /// True while a modifier other than Shift is down; Tab and Shift+Tab otherwise move
+    /// focus instead of being recorded.
+    pub fn holds_shortcut_modifier(&self) -> bool {
+        self.held.iter().any(|k| is_modifier(*k) && *k != Key::Shift)
     }
 
     pub fn press(&mut self, key: Key) -> Recorded {
@@ -128,8 +114,11 @@ mod tests {
         recorder.release(Key::Char(b'A'));
         assert_eq!(recorder.press(Key::F(5)), Recorded::Chord("F5".into()));
         recorder.reset();
+        recorder.press(Key::Shift);
+        assert!(!recorder.holds_shortcut_modifier());
+        recorder.release(Key::Shift);
         recorder.press(Key::Ctrl);
-        assert!(recorder.holds_modifier());
+        assert!(recorder.holds_shortcut_modifier());
         assert_eq!(recorder.press(Key::Backspace), Recorded::Chord("Ctrl+Backspace".into()));
     }
 }

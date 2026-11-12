@@ -33,7 +33,7 @@ impl Page {
         let save = button("Save");
         let row = adw::ActionRow::builder()
             .title("Push-to-talk hotkey")
-            .subtitle("Hold to dictate; double-press for continuous recording.")
+            .subtitle("Hold to dictate; double-press for continuous recording. Keys are named by their US-layout position.")
             .build();
         row.add_suffix(&hotkey);
         row.add_suffix(&save);
@@ -141,13 +141,18 @@ fn open_languages(ui: &Rc<Ui>) {
         })
     };
     for row in rows.iter() {
-        let (code, selected, filling, auto, save) =
-            (row.code, selected.clone(), filling.clone(), auto.clone(), save.clone());
-        row.check.connect_toggled(move |check| {
+        let (all, selected, filling, auto, save) =
+            // Weak: the rows own this handler.
+            (Rc::downgrade(&rows), selected.clone(), filling.clone(), auto.clone(), save.clone());
+        row.check.connect_toggled(move |_| {
+            let Some(all) = all.upgrade() else { return };
             if filling.get() {
                 return;
             }
-            let values = form::toggle_language(&selected.borrow(), code, check.is_active());
+            let visible: Vec<&LanguageRow> = all.iter().filter(|r| r.row.is_visible()).collect();
+            let codes: Vec<&str> = visible.iter().map(|r| r.code).collect();
+            let checked: Vec<&str> = visible.iter().filter(|r| r.check.is_active()).map(|r| r.code).collect();
+            let values = form::selected_languages(&selected.borrow(), &codes, &checked);
             *selected.borrow_mut() = values.clone();
             filling.set(true);
             auto.set_active(values.is_empty());

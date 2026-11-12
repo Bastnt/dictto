@@ -54,6 +54,10 @@ pub struct SpeechPlatform {
 /// Speech state registered on the host next to `CoreState` by apps with speech.
 /// Derefs to `CoreState` so speech code reads shared fields through one handle; the
 /// `speech` field is named apart from `CoreState::platform` so the deref never hides it.
+/// Folder under the data dir holding voice samples and recent reads; the settings
+/// windows open it.
+pub const AUDIO_DIR: &str = "Speech Audio";
+
 pub struct SpeechState {
     core: Arc<CoreState>,
     pub speech: SpeechPlatform,
@@ -64,7 +68,7 @@ pub struct SpeechState {
 
 impl SpeechState {
     pub fn new(core: Arc<CoreState>, data_dir: &Path, platform: SpeechPlatform) -> Result<Self, String> {
-        let audio_dir = std::path::absolute(data_dir.join("Speech Audio")).map_err(|e| e.to_string())?;
+        let audio_dir = std::path::absolute(data_dir.join(AUDIO_DIR)).map_err(|e| e.to_string())?;
         let cache = cache::Cache::new(audio_dir.clone(), platform.cache_files)
             .map_err(|e| log::warn!("Could not open speech audio folder: {e}"))
             .ok();
