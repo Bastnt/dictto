@@ -5,7 +5,11 @@ pub mod audio;
 #[cfg(target_os = "linux")]
 pub mod dbus;
 #[cfg(target_os = "linux")]
+pub mod injector;
+#[cfg(target_os = "linux")]
 pub mod keyboard;
+#[cfg(target_os = "linux")]
+pub mod notify;
 #[cfg(target_os = "linux")]
 pub mod session;
 
