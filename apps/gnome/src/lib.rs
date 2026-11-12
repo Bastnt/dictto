@@ -3,6 +3,10 @@
 #[cfg(target_os = "linux")]
 pub mod audio;
 #[cfg(target_os = "linux")]
+pub mod autostart;
+#[cfg(target_os = "linux")]
+pub mod daemon;
+#[cfg(target_os = "linux")]
 pub mod dbus;
 #[cfg(target_os = "linux")]
 pub mod injector;
@@ -10,6 +14,8 @@ pub mod injector;
 pub mod keyboard;
 #[cfg(target_os = "linux")]
 pub mod notify;
+#[cfg(target_os = "linux")]
+pub mod paths;
 #[cfg(target_os = "linux")]
 pub mod session;
 
