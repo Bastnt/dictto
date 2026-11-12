@@ -69,7 +69,9 @@ type Job<B> = Box<dyn FnOnce(&B) + Send>;
 pub struct AppService<B: AppBackend> {
     backend: Arc<B>,
     /// One thread runs every blocking backend call in arrival order, so close calls such
-    /// as two SetSetting cannot overtake each other.
+    /// as two SetSetting cannot overtake each other. The price: a keyring call that hangs
+    /// (an unanswered unlock prompt) holds back later settings calls; accepted, since
+    /// they would race otherwise.
     worker: std::sync::mpsc::Sender<Job<B>>,
     show_settings: Callback,
     quit: Callback,
@@ -260,7 +262,15 @@ impl<B: AppBackend> Served<B> {
         async_runtime::spawn(async move {
             let mut last_warn: Option<Instant> = None;
             let mut suppressed = 0u32;
+            let mut dropped_seen = 0u64;
+            let mut last_drop_log: Option<Instant> = None;
             while let Some((name, payload)) = events.recv().await {
+                let dropped = events.dropped();
+                if dropped > dropped_seen && last_drop_log.is_none_or(|t| t.elapsed() >= WARN_INTERVAL) {
+                    log::warn!("event queue full: {} event(s) dropped ({dropped} in total)", dropped - dropped_seen);
+                    dropped_seen = dropped;
+                    last_drop_log = Some(Instant::now());
+                }
                 if let Err(error) =
                     AppService::<B>::event(interface.signal_emitter(), &name, &payload).await
                 {
@@ -336,14 +346,14 @@ impl SinkHandle {
             }
         }
         if queue.pending.len() >= QUEUE_CAPACITY {
-            // A waveform frame is the cheapest loss; otherwise the oldest event goes.
-            let victim = queue
-                .pending
-                .iter()
-                .position(|(n, _)| n == events::WAVEFORM_DATA)
-                .unwrap_or(0);
-            queue.pending.remove(victim);
             queue.dropped += 1;
+            // A waveform frame is the cheapest loss: an incoming one is dropped rather
+            // than evicting a state event, and none can be pending here (it would have
+            // been replaced above). Otherwise the oldest event goes.
+            if name == events::WAVEFORM_DATA {
+                return;
+            }
+            queue.pending.pop_front();
         }
         queue.pending.push_back(entry);
         drop(queue);

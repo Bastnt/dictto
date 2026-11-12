@@ -102,6 +102,21 @@ async fn state_flood_drops_oldest_and_counts() {
 }
 
 #[tokio::test]
+async fn full_queue_drops_an_incoming_waveform_not_a_state_event() {
+    let (sink, mut events) = event_sink();
+    for i in 0..QUEUE_CAPACITY {
+        sink(events::SETTING_CHANGED, json!({ "n": i }));
+    }
+    sink(events::WAVEFORM_DATA, json!({ "level": 1 }));
+    assert_eq!(events.dropped(), 1);
+    for i in 0..QUEUE_CAPACITY {
+        let (name, payload) = events.recv().await.unwrap();
+        assert_eq!(name, "setting-changed");
+        assert_eq!(payload, format!(r#"{{"n":{i}}}"#));
+    }
+}
+
+#[tokio::test]
 async fn setting_errors_come_back_as_text() {
     let fake = Arc::new(Fake::default());
     let service = service(&fake);
