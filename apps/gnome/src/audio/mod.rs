@@ -59,9 +59,10 @@ enum Command {
         key: &'static str,
         reply: mpsc::Sender<Result<Option<String>, String>>,
     },
+    /// `None` deletes the key.
     MetadataSet {
         key: &'static str,
-        value: String,
+        value: Option<String>,
         reply: mpsc::Sender<Result<(), String>>,
     },
     /// Answered once the virtual microphone node is registered.
@@ -378,8 +379,8 @@ impl Graph {
                         metadata.proxy.set_property(
                             pw::core::PW_ID_CORE,
                             key,
-                            Some("Spa:String:JSON"),
-                            Some(&value),
+                            value.is_some().then_some("Spa:String:JSON"),
+                            value.as_deref(),
                         );
                         Ok(())
                     }
@@ -447,6 +448,9 @@ impl Graph {
     }
 
     fn create_mic(&mut self, reply: mpsc::Sender<Result<(), String>>) {
+        if self.mic.as_ref().is_some_and(mic::Source::failed) {
+            self.mic = None;
+        }
         if self.mic.as_ref().is_some_and(|mic| mic.registered.is_some()) {
             let _ = reply.send(Ok(()));
             return;
@@ -650,8 +654,11 @@ impl Graph {
         if self.links.remove(&id).is_some() {
             return;
         }
-        if let Some(mic) = self.mic.as_mut().filter(|mic| mic.registered == Some(id)) {
-            mic.registered = None;
+        // The node can go while the stream survives in an error state; a stream left
+        // without its node would make every later create wait and fail, so it is
+        // dropped and the next create opens a fresh one.
+        if self.mic.as_ref().is_some_and(|mic| mic.registered == Some(id)) {
+            self.mic = None;
         }
         let Some(node) = self.nodes.remove(&id) else {
             return;

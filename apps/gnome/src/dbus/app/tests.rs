@@ -250,6 +250,8 @@ fn dictation_errors_are_made_friendly_before_the_bus() {
     );
     let other = json!({"message": "worker_unavailable"});
     assert_eq!(friendly_payload(events::SPEECH_ERROR, other.clone()), other);
+    let odd = json!({"message": 42});
+    assert_eq!(friendly_payload(events::DICTATION_ERROR, odd.clone()), odd);
     let state = json!({"state": "idle"});
     assert_eq!(friendly_payload(events::DICTATION_ERROR, state.clone()), state);
 }

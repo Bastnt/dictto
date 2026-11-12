@@ -151,7 +151,11 @@ async fn focused_in(bus: &zbus::Connection, window: &ObjectRef) -> zbus::Result<
         if visited > MAX_VISITED {
             break;
         }
-        if has_state(&states(bus, &object).await?, STATE_FOCUSED) {
+        // A child that fails to answer is skipped, as `children` skips missing ones.
+        let Ok(states) = states(bus, &object).await else {
+            continue;
+        };
+        if has_state(&states, STATE_FOCUSED) {
             return Ok(Some(object));
         }
         queue.extend(children(bus, &object).await.unwrap_or_default());

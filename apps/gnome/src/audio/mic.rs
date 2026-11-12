@@ -3,7 +3,7 @@
 use super::devices::VIRTUAL_MIC_NODE;
 use super::{format_pod, Command, Pipewire};
 use pipewire as pw;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -65,6 +65,8 @@ pub(super) struct Source {
     /// Registry id of the node once announced; links are counted against it.
     pub(super) registered: Option<u32>,
     feed: Rc<RefCell<Feed>>,
+    /// Set when the stream reports an error; such a stream never registers.
+    failed: Rc<Cell<bool>>,
     // Declared before the stream so that the listener unregisters first.
     _listener: pw::stream::StreamListener<Rc<RefCell<Feed>>>,
     _stream: pw::stream::StreamRc,
@@ -86,12 +88,17 @@ impl Source {
         let stream = pw::stream::StreamRc::new(core.clone(), VIRTUAL_MIC_NODE, props)
             .map_err(|e| format!("Cannot create the Dictto Microphone: {e}"))?;
         let feed = Rc::new(RefCell::new(Feed::default()));
+        let failed = Rc::new(Cell::new(false));
         let listener = stream
             .add_local_listener_with_user_data(feed.clone())
             .process(|stream, feed| feed.borrow_mut().fill(stream))
-            .state_changed(|_, _, _, new| {
-                if let pw::stream::StreamState::Error(message) = new {
-                    log::warn!("[pipewire] Dictto Microphone failed: {message}");
+            .state_changed({
+                let failed = failed.clone();
+                move |_, _, _, new| {
+                    if let pw::stream::StreamState::Error(message) = new {
+                        log::warn!("[pipewire] Dictto Microphone failed: {message}");
+                        failed.set(true);
+                    }
                 }
             })
             .register()
@@ -109,6 +116,7 @@ impl Source {
         Ok(Self {
             registered: None,
             feed,
+            failed,
             _listener: listener,
             _stream: stream,
         })
@@ -126,6 +134,10 @@ impl Source {
         feed.samples = samples;
         feed.position = 0;
         feed.done = Some(done);
+    }
+
+    pub(super) fn failed(&self) -> bool {
+        self.failed.get()
     }
 
     pub(super) fn stop(&self) {
@@ -147,7 +159,8 @@ impl Pipewire {
         reply(answer)
     }
 
-    pub fn metadata_set(&self, key: &'static str, value: String) -> Result<(), String> {
+    /// `None` deletes the key.
+    pub fn metadata_set(&self, key: &'static str, value: Option<String>) -> Result<(), String> {
         let (sender, answer) = mpsc::channel();
         self.send(Command::MetadataSet { key, value, reply: sender })
             .map_err(|e| e.to_string())?;

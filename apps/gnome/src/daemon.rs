@@ -30,7 +30,6 @@ const KEYBOARD_DENIED_HELP: &str =
     "Run \"sudo usermod -aG input $USER\", then log out and back in. Dictation still works from the recording bar.";
 const AUDIO_UNAVAILABLE: &str = "Dictto cannot reach PipeWire";
 const PREVIEW: &str = "Preview: recording services disabled";
-const SESSION_LOOKUP: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub fn run(mode: Mode) -> Result<(), String> {
     async_runtime::initialize()?;
@@ -82,22 +81,9 @@ pub fn run(mode: Mode) -> Result<(), String> {
     });
     let data_dir = crate::paths::data_dir();
     // Without PipeWire nothing can be spoken, so the runtime is built without speech.
-    let speech = match &pipewire {
-        Some(pipewire) => {
-            let session = block_on(async {
-                match tokio::time::timeout(SESSION_LOOKUP, session::session_id()).await {
-                    Ok(id) => id.map_err(|e| e.to_string()),
-                    Err(_) => Err("logind did not answer".to_string()),
-                }
-            })?;
-            let journal = crate::speech::journal_path(&data_dir, session);
-            if let Err(error) = &journal {
-                log::warn!("virtual microphone routing unavailable: {error}");
-            }
-            Some(crate::speech::platform(pipewire.clone(), shell.clone(), journal))
-        }
-        None => None,
-    };
+    let speech = pipewire
+        .as_ref()
+        .map(|pipewire| crate::speech::platform(pipewire.clone(), shell.clone(), &data_dir));
     let injector = Arc::new(GnomeInjector::new(shell, UinputKeys::default(), reporter));
     let platform = match pipewire {
         Some(pipewire) => Platform {

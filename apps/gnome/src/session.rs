@@ -114,15 +114,6 @@ trait Session {
     fn locked_hint(&self) -> zbus::Result<bool>;
     #[zbus(signal)]
     fn unlock(&self) -> zbus::Result<()>;
-    #[zbus(property)]
-    fn id(&self) -> zbus::Result<String>;
-}
-
-/// The logind id of the session this daemon follows, resolved like `watch` does.
-pub async fn session_id() -> zbus::Result<String> {
-    let connection = zbus::Connection::system().await?;
-    let path = session_path(&connection).await?;
-    SessionProxy::builder(&connection).path(path)?.build().await?.id().await
 }
 
 /// Watches the session on the core's runtime for the daemon's lifetime, resubscribing

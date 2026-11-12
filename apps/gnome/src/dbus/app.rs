@@ -387,8 +387,9 @@ pub fn event_sink() -> (impl Fn(&str, serde_json::Value) + Send + Sync + 'static
 fn friendly_payload(name: &str, mut payload: serde_json::Value) -> serde_json::Value {
     if name == events::DICTATION_ERROR {
         if let Some(message) = payload.get_mut("message") {
-            let raw = message.as_str().unwrap_or_default();
-            *message = dictto_core::transcription::friendly_error(raw).into();
+            if let Some(raw) = message.as_str() {
+                *message = dictto_core::transcription::friendly_error(raw).into();
+            }
         }
     }
     payload
