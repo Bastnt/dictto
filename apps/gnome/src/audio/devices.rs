@@ -21,12 +21,16 @@ pub struct NodeInfo {
     pub name: String,
     pub description: String,
     pub media_class: String,
+    /// `device.bus` and `device.form-factor`, when the node carries them.
+    pub bus: Option<String>,
+    pub form_factor: Option<String>,
 }
 
-/// Real microphones only: sink monitors are not source nodes, and the virtual mic is
+/// Sources, including other virtual ones such as an EasyEffects or filter-chain mic the
+/// user made the default. Sink monitors are not source nodes. Dictto's own virtual mic is
 /// excluded by name because capturing it while speech is routed would loop it back.
 pub fn is_capture_candidate(node: &NodeInfo) -> bool {
-    node.media_class == "Audio/Source" && node.name != VIRTUAL_MIC_NODE
+    node.media_class.starts_with("Audio/Source") && node.name != VIRTUAL_MIC_NODE
 }
 
 /// Resolves the node a capture targets. A selection that names no available node falls
@@ -61,14 +65,25 @@ pub fn microphones(nodes: &[NodeInfo], default: Option<&str>) -> Vec<MicrophoneI
             name: node.description.clone(),
             id: node.name.clone(),
             is_default: default == Some(node.name.as_str()),
-            form_factor: form_factor(&node.name).into(),
+            form_factor: form_factor(node).into(),
         })
         .collect()
 }
 
-/// Same labels as Windows; the node name carries the bus (`bluez_input.*`, `*usb*`).
-fn form_factor(node_name: &str) -> &'static str {
-    let name = node_name.to_ascii_lowercase();
+/// Same labels as Windows. The device properties are used when the node carries them;
+/// otherwise the node name usually names the bus (`bluez_input.*`, `*usb*`).
+fn form_factor(node: &NodeInfo) -> &'static str {
+    match node.bus.as_deref() {
+        Some("bluetooth") => return "Bluetooth",
+        Some("usb") => return "USB",
+        _ => {}
+    }
+    match node.form_factor.as_deref() {
+        Some("microphone" | "webcam") => return "Microphone",
+        Some("headset" | "handset" | "hands-free") => return "Headset",
+        _ => {}
+    }
+    let name = node.name.to_ascii_lowercase();
     if name.starts_with("bluez") {
         "Bluetooth"
     } else if name.contains("usb") {
@@ -152,8 +167,12 @@ mod tests {
             name: name.into(),
             description: description.into(),
             media_class: class.into(),
+            bus: None,
+            form_factor: None,
         }
     }
+
+    const EFFECTS: &str = "easyeffects_source";
 
     fn graph() -> Vec<NodeInfo> {
         vec![
@@ -181,6 +200,7 @@ mod tests {
                 "Dictto Microphone",
                 "Audio/Source/Virtual",
             ),
+            node(35, EFFECTS, "Easy Effects Source", "Audio/Source/Virtual"),
         ]
     }
 
@@ -216,7 +236,7 @@ mod tests {
         assert_eq!(target.id, 31);
         // Without a usable default, any source is better than failing, like Windows.
         let target = select_target(&missing, &nodes, None).unwrap();
-        assert_eq!(target.media_class, "Audio/Source");
+        assert_eq!(target.id, 31);
         assert!(select_target(&missing, &nodes[..1], None).is_none());
     }
 
@@ -250,20 +270,49 @@ mod tests {
         );
 
         let listed = microphones(&nodes, default);
-        assert_eq!(listed.len(), 2);
+        assert_eq!(listed.len(), 3);
         assert!(listed
             .iter()
             .all(|m| m.id != VIRTUAL_MIC_NODE && !m.is_default));
     }
 
     #[test]
+    fn other_virtual_sources_are_listed_and_selectable() {
+        let nodes = graph();
+        let target = select_target(&DeviceSelection::AutoDetect(None), &nodes, Some(EFFECTS));
+        assert_eq!(target.unwrap().id, 35);
+        let by_label = DeviceSelection::ByName("Easy Effects Source".into());
+        assert_eq!(select_target(&by_label, &nodes, None).unwrap().id, 35);
+        let listed = microphones(&nodes, Some(EFFECTS));
+        assert!(listed.iter().any(|m| m.id == EFFECTS && m.is_default));
+    }
+
+    #[test]
     fn listing_uses_node_name_as_id_and_description_as_name() {
         let listed = microphones(&graph(), Some("alsa_input.pci.analog-stereo"));
-        assert_eq!(listed.len(), 2);
+        assert_eq!(listed.len(), 3);
         assert_eq!(listed[0].id, "alsa_input.pci.analog-stereo");
         assert_eq!(listed[0].name, "Built-in Microphone");
         assert!(listed[0].is_default);
         assert_eq!(listed[1].form_factor, "USB");
         assert!(!listed[1].is_default);
+        assert_eq!(listed[2].id, EFFECTS);
+    }
+
+    #[test]
+    fn device_properties_win_over_the_name() {
+        let mut mic = node(
+            40,
+            "alsa_input.pci.analog-stereo",
+            "Headset",
+            "Audio/Source",
+        );
+        assert_eq!(form_factor(&mic), "Audio");
+        mic.form_factor = Some("headset".into());
+        assert_eq!(form_factor(&mic), "Headset");
+        mic.bus = Some("usb".into());
+        assert_eq!(form_factor(&mic), "USB");
+        let bluez = node(41, "bluez_input.00_11", "Buds", "Audio/Source");
+        assert_eq!(form_factor(&bluez), "Bluetooth");
     }
 }

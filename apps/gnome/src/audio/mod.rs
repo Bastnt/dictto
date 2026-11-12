@@ -462,6 +462,8 @@ impl Graph {
                         .unwrap_or(name)
                         .into(),
                     media_class: media_class.into(),
+                    bus: props.get("device.bus").map(str::to_owned),
+                    form_factor: props.get("device.form-factor").map(str::to_owned),
                 };
                 let candidate = devices::is_capture_candidate(&node);
                 graph.nodes.insert(global.id, node);
@@ -535,19 +537,21 @@ impl Graph {
         let name = value.and_then(default_name);
         match key {
             None => {
-                self.default_source = None;
+                self.set_default_source(None);
                 self.set_default_sink(None);
             }
-            Some(DEFAULT_SOURCE_KEY) => {
-                if self.default_source != name {
-                    self.default_source = name;
-                    if self.synced {
-                        self.track_default(true);
-                    }
-                }
-            }
+            Some(DEFAULT_SOURCE_KEY) => self.set_default_source(name),
             Some(DEFAULT_SINK_KEY) => self.set_default_sink(name),
             Some(_) => {}
+        }
+    }
+
+    fn set_default_source(&mut self, name: Option<String>) {
+        if self.default_source != name {
+            self.default_source = name;
+            if self.synced {
+                self.track_default(true);
+            }
         }
     }
 
@@ -595,9 +599,7 @@ impl Graph {
         for command in std::mem::take(&mut self.waiting) {
             command.fail("PipeWire disconnected.");
         }
-        for watcher in self.watchers.values() {
-            watcher.changed();
-        }
+        // Monitors are told once, by the sync after reconnecting, with the final state.
         self.arm_retry();
         Some(connection)
     }
