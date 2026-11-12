@@ -4,19 +4,19 @@
 use dictto_core::host::async_runtime::{self, JoinHandle};
 use dictto_core::Runtime;
 use futures_util::StreamExt;
+use std::time::Duration;
+use zbus::fdo::PropertiesProxy;
+use zbus::names::InterfaceName;
 use zbus::zvariant::OwnedObjectPath;
+
+const SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
+const RETRY_MIN: Duration = Duration::from_secs(1);
+const RETRY_MAX: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionState {
     pub active: bool,
     pub locked: bool,
-}
-
-impl Default for SessionState {
-    // The core starts unsuspended; this matches it until logind says otherwise.
-    fn default() -> Self {
-        Self { active: true, locked: false }
-    }
 }
 
 impl SessionState {
@@ -28,18 +28,44 @@ impl SessionState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionEvent {
     Active(bool),
-    Locked(bool),
+    LockedHint(bool),
+    /// logind's Unlock signal: a request GNOME acts on, taken only as a resume hint.
+    /// Lock is not followed at all; LockedHint reports when the screen is really locked.
+    Unlock,
 }
 
-/// Applies an observation; returns the new suspension only when it flips.
-pub fn apply(state: &mut SessionState, event: SessionEvent) -> Option<bool> {
-    let before = state.suspended();
-    match event {
-        SessionEvent::Active(active) => state.active = active,
-        SessionEvent::Locked(locked) => state.locked = locked,
+/// Suspension policy. Before logind has ever answered, input stays enabled (a system
+/// without logind must still dictate). Once a state was observed it is kept across
+/// watch failures until a new subscription reads fresh values.
+#[derive(Debug, Default)]
+pub struct Watcher {
+    state: Option<SessionState>,
+}
+
+impl Watcher {
+    pub fn suspended(&self) -> bool {
+        self.state.is_some_and(SessionState::suspended)
     }
-    let after = state.suspended();
-    (after != before).then_some(after)
+
+    /// Applies an observation; returns the new suspension only when it flips.
+    pub fn observe(&mut self, event: SessionEvent) -> Option<bool> {
+        let before = self.suspended();
+        let mut state = self.state.unwrap_or(SessionState { active: true, locked: false });
+        match event {
+            SessionEvent::Active(active) => state.active = active,
+            SessionEvent::LockedHint(locked) => state.locked = locked,
+            SessionEvent::Unlock => state.locked = false,
+        }
+        self.state = Some(state);
+        let after = self.suspended();
+        (after != before).then_some(after)
+    }
+
+    /// The watch stopped. Never changes the suspension: unknown at startup means enabled,
+    /// and a known state stays until fresh values arrive.
+    pub fn lost(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// What a suspension change drives; the runtime in production, a recorder in tests.
@@ -57,12 +83,16 @@ impl SessionSink for Runtime {
     }
 }
 
-fn feed<S: SessionSink>(sink: &S, state: &mut SessionState, event: SessionEvent) {
-    if let Some(suspended) = apply(state, event) {
+fn notify<S: SessionSink>(sink: &S, change: Option<bool>) {
+    if let Some(suspended) = change {
         log::info!("session {}", if suspended { "suspended" } else { "resumed" });
         sink.input_suspended(suspended);
         sink.session_changed(suspended);
     }
+}
+
+fn feed<S: SessionSink>(sink: &S, watcher: &mut Watcher, event: SessionEvent) {
+    notify(sink, watcher.observe(event));
 }
 
 #[zbus::proxy(
@@ -83,21 +113,26 @@ trait Session {
     #[zbus(property)]
     fn locked_hint(&self) -> zbus::Result<bool>;
     #[zbus(signal)]
-    fn lock(&self) -> zbus::Result<()>;
-    #[zbus(signal)]
     fn unlock(&self) -> zbus::Result<()>;
 }
 
-/// Watches the session on the core's runtime until the bus goes away.
+/// Watches the session on the core's runtime for the daemon's lifetime, resubscribing
+/// with a backoff whenever the bus or logind fails.
 pub fn watch<S: SessionSink>(sink: S) -> JoinHandle<()> {
     async_runtime::spawn(async move {
-        let mut state = SessionState::default();
-        if let Err(error) = run(&sink, &mut state).await {
-            log::warn!("logind session watch stopped: {error}");
+        let mut watcher = Watcher::default();
+        let mut delay = RETRY_MIN;
+        loop {
+            let mut subscribed = false;
+            let error = run(&sink, &mut watcher, &mut subscribed).await;
+            notify(&sink, watcher.lost());
+            if subscribed {
+                delay = RETRY_MIN;
+            }
+            log::warn!("logind session watch interrupted, retrying in {delay:?}: {error}");
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(RETRY_MAX);
         }
-        // Unobserved, a suspension would never lift; shortcuts that work are the lesser risk.
-        feed(&sink, &mut state, SessionEvent::Active(true));
-        feed(&sink, &mut state, SessionEvent::Locked(false));
     })
 }
 
@@ -116,40 +151,71 @@ async fn session_path(connection: &zbus::Connection) -> zbus::Result<OwnedObject
     }
 }
 
-async fn run<S: SessionSink>(sink: &S, state: &mut SessionState) -> zbus::Result<()> {
+/// Reads a property from logind itself, bypassing the proxy cache.
+async fn read(properties: &PropertiesProxy<'_>, name: &str) -> zbus::Result<bool> {
+    let interface = InterfaceName::from_static_str_unchecked(SESSION_INTERFACE);
+    let value = properties.get(interface, name).await?;
+    Ok(bool::try_from(value)?)
+}
+
+/// Runs one subscription; only returns on failure.
+async fn run<S: SessionSink>(sink: &S, watcher: &mut Watcher, subscribed: &mut bool) -> zbus::Error {
+    match subscribe(sink, watcher, subscribed).await {
+        Ok(never) => match never {},
+        Err(error) => error,
+    }
+}
+
+async fn subscribe<S: SessionSink>(
+    sink: &S,
+    watcher: &mut Watcher,
+    subscribed: &mut bool,
+) -> zbus::Result<std::convert::Infallible> {
     let connection = zbus::Connection::system().await?;
     let path = session_path(&connection).await?;
     log::info!("following logind session {}", path.as_str());
-    let session = SessionProxy::builder(&connection).path(path)?.build().await?;
+    let session = SessionProxy::builder(&connection).path(path.clone())?.build().await?;
+    let properties = PropertiesProxy::builder(&connection)
+        .destination("org.freedesktop.login1")?
+        .path(path)?
+        .build()
+        .await?;
+    // Subscribed before the reads so no change falls between them.
     let mut active = session.receive_active_changed().await;
     let mut locked = session.receive_locked_hint_changed().await;
-    let mut lock = session.receive_lock().await?;
     let mut unlock = session.receive_unlock().await?;
-    feed(sink, state, SessionEvent::Active(session.active().await?));
-    feed(sink, state, SessionEvent::Locked(session.locked_hint().await?));
+    feed(sink, watcher, SessionEvent::Active(read(&properties, "Active").await?));
+    feed(sink, watcher, SessionEvent::LockedHint(read(&properties, "LockedHint").await?));
+    *subscribed = true;
     loop {
-        // LockedHint as well as Lock/Unlock: unlocking through the GNOME shield emits no
-        // Unlock signal, only the hint going back to false.
+        // A change whose value cannot be decoded is re-read from logind; if that fails
+        // too the subscription is restarted with the last state kept.
         let event = tokio::select! {
-            Some(change) = active.next() => SessionEvent::Active(change.get().await?),
-            Some(change) = locked.next() => SessionEvent::Locked(change.get().await?),
-            Some(_) = lock.next() => SessionEvent::Locked(true),
-            Some(_) = unlock.next() => SessionEvent::Locked(false),
-            else => return Ok(()),
+            Some(change) = active.next() => SessionEvent::Active(match change.get().await {
+                Ok(value) => value,
+                Err(_) => read(&properties, "Active").await?,
+            }),
+            Some(change) = locked.next() => SessionEvent::LockedHint(match change.get().await {
+                Ok(value) => value,
+                Err(_) => read(&properties, "LockedHint").await?,
+            }),
+            Some(_) = unlock.next() => SessionEvent::Unlock,
+            else => return Err(zbus::Error::Failure("logind streams ended".into())),
         };
-        feed(sink, state, event);
+        feed(sink, watcher, event);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
+    use SessionEvent::{Active, LockedHint, Unlock};
 
     #[derive(Default)]
     struct Recorder(Mutex<Vec<(&'static str, bool)>>);
 
-    impl SessionSink for std::sync::Arc<Recorder> {
+    impl SessionSink for Arc<Recorder> {
         fn input_suspended(&self, suspended: bool) {
             self.0.lock().unwrap().push(("input", suspended));
         }
@@ -158,56 +224,63 @@ mod tests {
         }
     }
 
-    fn run_events(events: &[SessionEvent]) -> Vec<(&'static str, bool)> {
-        let sink = std::sync::Arc::new(Recorder::default());
-        let mut state = SessionState::default();
+    fn run_events(watcher: &mut Watcher, events: &[SessionEvent]) -> Vec<(&'static str, bool)> {
+        let sink = Arc::new(Recorder::default());
         for event in events {
-            feed(&sink, &mut state, *event);
+            feed(&sink, watcher, *event);
         }
         let calls = sink.0.lock().unwrap().clone();
         calls
     }
 
-    use SessionEvent::{Active, Locked};
+    const SUSPEND: [(&str, bool); 2] = [("input", true), ("session", true)];
+    const RESUME: [(&str, bool); 2] = [("input", false), ("session", false)];
 
     #[test]
-    fn lock_and_unlock_suspend_then_resume() {
-        assert_eq!(
-            run_events(&[Locked(true), Locked(false)]),
-            [("input", true), ("session", true), ("input", false), ("session", false)]
-        );
+    fn locked_hint_suspends_and_resumes() {
+        let calls = run_events(&mut Watcher::default(), &[LockedHint(true), LockedHint(false)]);
+        assert_eq!(calls, [SUSPEND, RESUME].concat());
     }
 
     #[test]
     fn inactive_session_suspends() {
-        assert_eq!(
-            run_events(&[Active(false), Active(true)]),
-            [("input", true), ("session", true), ("input", false), ("session", false)]
-        );
+        let calls = run_events(&mut Watcher::default(), &[Active(false), Active(true)]);
+        assert_eq!(calls, [SUSPEND, RESUME].concat());
     }
 
     #[test]
     fn repeated_observations_call_once() {
-        assert_eq!(
-            run_events(&[Active(true), Locked(false), Locked(true), Locked(true)]),
-            [("input", true), ("session", true)]
-        );
+        let events = [Active(true), LockedHint(false), LockedHint(true), LockedHint(true)];
+        assert_eq!(run_events(&mut Watcher::default(), &events), SUSPEND);
     }
 
     #[test]
     fn resumes_only_when_both_active_and_unlocked() {
-        assert_eq!(
-            run_events(&[Locked(true), Active(false), Locked(false), Active(true)]),
-            [("input", true), ("session", true), ("input", false), ("session", false)]
-        );
+        let events = [LockedHint(true), Active(false), LockedHint(false), Active(true)];
+        assert_eq!(run_events(&mut Watcher::default(), &events), [SUSPEND, RESUME].concat());
     }
 
     #[test]
-    fn apply_reports_flips_only() {
-        let mut state = SessionState::default();
-        assert_eq!(apply(&mut state, Locked(true)), Some(true));
-        assert_eq!(apply(&mut state, Active(false)), None);
-        assert_eq!(apply(&mut state, Locked(false)), None);
-        assert_eq!(apply(&mut state, Active(true)), Some(false));
+    fn unlock_signal_resumes_a_locked_session() {
+        let calls = run_events(&mut Watcher::default(), &[LockedHint(true), Unlock]);
+        assert_eq!(calls, [SUSPEND, RESUME].concat());
+        assert!(run_events(&mut Watcher::default(), &[Unlock]).is_empty());
+    }
+
+    #[test]
+    fn error_after_locked_state_keeps_input_suspended() {
+        let mut watcher = Watcher::default();
+        run_events(&mut watcher, &[Active(true), LockedHint(true)]);
+        assert_eq!(watcher.lost(), None);
+        assert!(watcher.suspended());
+        // The next subscription's fresh reads decide.
+        assert_eq!(run_events(&mut watcher, &[Active(true), LockedHint(false)]), RESUME);
+    }
+
+    #[test]
+    fn without_logind_at_startup_input_is_enabled() {
+        let watcher = Watcher::default();
+        assert_eq!(watcher.lost(), None);
+        assert!(!watcher.suspended());
     }
 }
