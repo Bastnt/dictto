@@ -10,7 +10,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, Notify};
+use futures_util::StreamExt;
 use zbus::fdo;
+use zbus::names::OwnedUniqueName;
 use zbus::object_server::{InterfaceRef, SignalEmitter};
 
 pub trait AppBackend: Send + Sync + 'static {
@@ -76,6 +78,9 @@ pub struct AppService<B: AppBackend> {
     show_settings: Callback,
     quit: Callback,
     status: Arc<Mutex<String>>,
+    /// Watches the bus client that turned shortcut capture on, so a settings process
+    /// that dies while recording a shortcut does not leave every shortcut suspended.
+    capture_watch: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl<B: AppBackend> AppService<B> {
@@ -101,6 +106,19 @@ impl<B: AppBackend> AppService<B> {
             show_settings: Box::new(show_settings),
             quit: Box::new(quit),
             status: Arc::new(Mutex::new("ok".into())),
+            capture_watch: Mutex::new(None),
+        }
+    }
+
+    /// `owner` is the caller turning capture on; capture ends when it leaves the bus.
+    fn set_capture(&self, active: bool, owner: Option<(zbus::Connection, OwnedUniqueName)>) {
+        self.backend.set_hotkey_capture(active);
+        let watch = owner.filter(|_| active).map(|(connection, name)| {
+            async_runtime::spawn(release_capture_when_gone(connection, name, self.backend.clone()))
+        });
+        let Ok(mut slot) = self.capture_watch.lock() else { return };
+        if let Some(previous) = std::mem::replace(&mut *slot, watch) {
+            previous.abort();
         }
     }
 
@@ -115,6 +133,34 @@ impl<B: AppBackend> AppService<B> {
         });
         self.worker.send(job).map_err(|_| fdo::Error::Failed("worker stopped".into()))?;
         answer.await.map_err(|_| fdo::Error::Failed("worker stopped".into()))
+    }
+}
+
+async fn release_capture_when_gone<B: AppBackend>(
+    connection: zbus::Connection,
+    owner: OwnedUniqueName,
+    backend: Arc<B>,
+) {
+    let gone = async {
+        let dbus = fdo::DBusProxy::new(&connection).await?;
+        let mut changes = dbus.receive_name_owner_changed_with_args(&[(0, owner.as_str())]).await?;
+        // The caller may have left before the match rule existed.
+        if !dbus.name_has_owner(owner.as_ref().into()).await? {
+            return Ok(());
+        }
+        while let Some(change) = changes.next().await {
+            if change.args()?.new_owner().is_none() {
+                return Ok(());
+            }
+        }
+        Err(zbus::Error::Failure("bus connection closed".into()))
+    };
+    match gone.await {
+        Ok(()) => {
+            log::info!("{owner} left the bus while recording a shortcut; shortcuts resume");
+            backend.set_hotkey_capture(false);
+        }
+        Err(error) => log::warn!("cannot watch {owner} for shortcut capture: {error}"),
     }
 }
 
@@ -146,8 +192,14 @@ impl<B: AppBackend> AppService<B> {
         self.backend.cancel_recording();
     }
 
-    fn set_hotkey_capture(&self, active: bool) {
-        self.backend.set_hotkey_capture(active);
+    fn set_hotkey_capture(
+        &self,
+        active: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) {
+        let owner = header.sender().map(|name| (connection.clone(), name.to_owned().into()));
+        self.set_capture(active, owner);
     }
 
     async fn set_setting(&self, key: String, value: String) -> fdo::Result<String> {

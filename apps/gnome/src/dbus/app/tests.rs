@@ -140,7 +140,7 @@ async fn bar_and_capture_reach_the_backend() {
     service.bar_start();
     service.bar_stop();
     service.bar_cancel();
-    service.set_hotkey_capture(true);
+    service.set_capture(true, None);
     service.discover_speech_models(7);
     assert_eq!(*fake.calls.lock().unwrap(), ["start", "stop", "cancel", "capture true"]);
     assert_eq!(fake.generation.load(Ordering::SeqCst), 7);
@@ -239,6 +239,20 @@ async fn private_bus_round_trip() {
     assert_eq!(shell.get_text("clipboard").await.unwrap(), (false, "from clipboard".to_string()));
     shell.set_text("x").await.unwrap();
     shell.restore_clipboard(41).await.unwrap();
+
+    // A settings process that dies while recording a shortcut releases the capture.
+    let settings = zbus::Connection::session().await.unwrap();
+    let capturer = zbus::Proxy::new(&settings, APP_BUS_NAME, APP_PATH, "com.dictto.App1").await.unwrap();
+    let () = capturer.call("SetHotkeyCapture", &(true,)).await.unwrap();
+    assert_eq!(*fake.calls.lock().unwrap().last().unwrap(), "capture true");
+    drop(capturer);
+    settings.close().await.unwrap();
+    let released = async {
+        while fake.calls.lock().unwrap().last().map(String::as_str) != Some("capture false") {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), released).await.unwrap();
 }
 
 #[test]
