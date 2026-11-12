@@ -181,14 +181,9 @@ export function placement(workArea, size, scale) {
     };
 }
 
-// Only text and images can come back: St restores a single mimetype.
-export function savableMimetypes(mimetypes) {
-    return (mimetypes ?? []).filter(m => m.startsWith('text/') || m.startsWith('image/'));
-}
-
-// St.Clipboard.set_content takes one mimetype, so one is chosen: plain text first, then
-// an image (a lone text/html next to an image is usually the image's wrapper), then any
-// other text.
+// St.Clipboard.set_content takes one mimetype, so one is chosen and only it is saved:
+// plain text first, then an image (a lone text/html next to an image is usually the
+// image's wrapper), then any other text. Other types cannot come back; null if none.
 export function pickRestoreMime(mimetypes) {
     const types = mimetypes ?? [];
     for (const preferred of ['text/plain;charset=utf-8', 'text/plain']) {
@@ -211,23 +206,27 @@ export class ClipboardTokens {
         this._saved = new Map();
     }
 
-    save(entries) {
+    // entry may be null: the clipboard held nothing restorable.
+    save(entry) {
         const token = this._next;
         this._next = token >= MAX_TOKEN ? 1 : token + 1;
         this._saved.delete(token);
-        this._saved.set(token, entries);
+        this._saved.set(token, entry);
         while (this._saved.size > this._limit)
             this._saved.delete(this._saved.keys().next().value);
         return token;
     }
 
-    // A token is restored once; it is gone afterwards.
+    has(token) {
+        return this._saved.has(token);
+    }
+
+    // A token is restored once; it is gone afterwards. Unknown tokens give null too,
+    // so callers tell them apart with has().
     take(token) {
-        const entries = this._saved.get(token);
-        if (entries === undefined)
-            return null;
+        const entry = this._saved.get(token) ?? null;
         this._saved.delete(token);
-        return entries;
+        return entry;
     }
 
     clear() {

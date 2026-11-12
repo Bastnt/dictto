@@ -8,8 +8,6 @@ import {APP_NAME, APP_PATH, APP_XML} from './dbus.js';
 import {Indicator} from './indicator.js';
 import {Overlay} from './overlay.js';
 
-const AppProxy = Gio.DBusProxy.makeProxyWrapper(APP_XML);
-
 // Draws and relays only: every decision stays in the dictto-gnome daemon.
 export default class DicttoExtension extends Extension {
     enable() {
@@ -32,6 +30,8 @@ export default class DicttoExtension extends Extension {
         this._clipboard = new ClipboardService(
             sender => this._appOwner !== null && sender === this._appOwner);
 
+        // Built here, not at module scope: extensions do no work until enable() (review rule).
+        const AppProxy = Gio.DBusProxy.makeProxyWrapper(APP_XML);
         // DO_NOT_AUTO_START: the extension must never launch the daemon by itself.
         new AppProxy(Gio.DBus.session, APP_NAME, APP_PATH, (proxy, error) => {
             if (error) {

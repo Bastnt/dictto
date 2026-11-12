@@ -157,30 +157,40 @@ test('placement is bottom centre, 18px above the work area edge', () => {
 
 test('clipboard tokens are sequential, single use and evict the oldest', () => {
     const t = new S.ClipboardTokens(3);
-    equal([t.save(['a']), t.save(['b']), t.save(['c'])], [1, 2, 3]);
-    equal(t.save(['d']), 4);
+    equal([t.save({mimetype: 'a'}), t.save({mimetype: 'b'}), t.save({mimetype: 'c'})], [1, 2, 3]);
+    equal(t.save({mimetype: 'd'}), 4);
     equal(t.size, 3);
-    equal(t.take(1), null, 'evicted');
-    equal(t.take(2), ['b']);
-    equal(t.take(2), null, 'single use');
-    equal(t.take(99), null);
+    equal(t.has(1), false, 'evicted');
+    equal(t.has(2), true);
+    equal(t.take(2), {mimetype: 'b'});
+    equal(t.has(2), false, 'single use');
+    equal(t.has(99), false);
     equal(t.size, 2);
+});
+
+test('a save with nothing restorable still yields a token that restores nothing', () => {
+    const t = new S.ClipboardTokens(3);
+    const token = t.save(null);
+    equal(t.has(token), true);
+    equal(t.take(token), null);
+    equal(t.has(token), false);
 });
 
 test('clipboard tokens wrap within u32 and never issue 0', () => {
     const t = new S.ClipboardTokens(3);
     t._next = 0xffffffff;
-    equal(t.save([]), 0xffffffff);
-    equal(t.save([]), 1);
+    equal(t.save(null), 0xffffffff);
+    equal(t.save(null), 1);
 });
 
-test('restore picks plain text, then an image, then other text', () => {
+test('save picks plain text, then an image, then other text', () => {
     equal(S.pickRestoreMime(['text/html', 'text/plain', 'text/plain;charset=utf-8']), 'text/plain;charset=utf-8');
     equal(S.pickRestoreMime(['text/html', 'image/png', 'image/jpeg']), 'image/png');
     equal(S.pickRestoreMime(['text/html', 'text/uri-list']), 'text/html');
     equal(S.pickRestoreMime([]), null);
-    equal(S.savableMimetypes(['TARGETS', 'text/plain', 'image/png', 'x-special/gnome-copied-files']),
-        ['text/plain', 'image/png']);
+    equal(S.pickRestoreMime(null), null);
+    equal(S.pickRestoreMime(['TARGETS', 'x-special/gnome-copied-files', 'image/bmp', 'text/plain']), 'text/plain');
+    equal(S.pickRestoreMime(['TARGETS', 'x-special/gnome-copied-files']), null, 'nothing restorable');
 });
 
 function describe(xml) {
