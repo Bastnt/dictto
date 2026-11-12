@@ -18,6 +18,8 @@ pub mod notify;
 pub mod paths;
 #[cfg(target_os = "linux")]
 pub mod session;
+#[cfg(target_os = "linux")]
+pub mod speech;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {

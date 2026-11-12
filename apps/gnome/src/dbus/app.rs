@@ -376,8 +376,22 @@ impl Drop for SinkHandle {
 pub fn event_sink() -> (impl Fn(&str, serde_json::Value) + Send + Sync + 'static, EventReceiver) {
     let shared = Arc::new(Shared { queue: Mutex::new(Queue::default()), ready: Notify::new() });
     let handle = SinkHandle(shared.clone());
-    let sink = move |name: &str, payload: serde_json::Value| handle.push(name, payload.to_string());
+    let sink = move |name: &str, payload: serde_json::Value| {
+        handle.push(name, friendly_payload(name, payload).to_string())
+    };
     (sink, EventReceiver { shared })
+}
+
+/// The extension shows `dictation-error` messages verbatim, so they are made readable
+/// here, as the Windows overlay does before display. The raw error is already logged.
+fn friendly_payload(name: &str, mut payload: serde_json::Value) -> serde_json::Value {
+    if name == events::DICTATION_ERROR {
+        if let Some(message) = payload.get_mut("message") {
+            let raw = message.as_str().unwrap_or_default();
+            *message = dictto_core::transcription::friendly_error(raw).into();
+        }
+    }
+    payload
 }
 
 #[cfg(test)]

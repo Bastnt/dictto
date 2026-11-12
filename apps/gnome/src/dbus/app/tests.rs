@@ -240,3 +240,25 @@ async fn private_bus_round_trip() {
     shell.set_text("x").await.unwrap();
     shell.restore_clipboard(41).await.unwrap();
 }
+
+#[test]
+fn dictation_errors_are_made_friendly_before_the_bus() {
+    let raw = json!({"message": "API error: worker_unavailable (503)"});
+    assert_eq!(
+        friendly_payload(events::DICTATION_ERROR, raw),
+        json!({"message": "Transcription server is unavailable. Try again shortly."})
+    );
+    let other = json!({"message": "worker_unavailable"});
+    assert_eq!(friendly_payload(events::SPEECH_ERROR, other.clone()), other);
+    let state = json!({"state": "idle"});
+    assert_eq!(friendly_payload(events::DICTATION_ERROR, state.clone()), state);
+}
+
+#[tokio::test]
+async fn sink_queues_the_friendly_message() {
+    let (sink, mut queue) = event_sink();
+    sink(events::DICTATION_ERROR, json!({"message": "Timeout"}));
+    let (name, payload) = queue.recv().await.unwrap();
+    assert_eq!(name, events::DICTATION_ERROR);
+    assert_eq!(payload, json!({"message": "Transcription timed out. Try again."}).to_string());
+}

@@ -36,6 +36,29 @@ impl Pcm {
             channels: spec.channels.into(),
         })
     }
+
+    /// Mono samples at `rate`, by averaging channels and linear interpolation.
+    pub fn to_mono(&self, rate: u32) -> Vec<i16> {
+        let channels = self.channels as usize;
+        let frames = self.samples.len() / channels;
+        if frames == 0 {
+            return Vec::new();
+        }
+        let frame = |index: usize| {
+            let slice = &self.samples[index * channels..][..channels];
+            slice.iter().map(|s| f64::from(*s)).sum::<f64>() / channels as f64
+        };
+        let output = (frames as u64 * u64::from(rate)).div_ceil(u64::from(self.rate));
+        (0..output)
+            .map(|target| {
+                let numerator = target * u64::from(self.rate);
+                let index = (numerator / u64::from(rate)) as usize;
+                let fraction = (numerator % u64::from(rate)) as f64 / f64::from(rate);
+                let (a, b) = (frame(index), frame((index + 1).min(frames - 1)));
+                (a + (b - a) * fraction).round() as i16
+            })
+            .collect()
+    }
 }
 
 pub(super) struct Request {

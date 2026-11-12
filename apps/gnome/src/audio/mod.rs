@@ -1,6 +1,8 @@
 //! PipeWire audio. One main-loop thread owns every PipeWire object for the process; the
-//! recorder, player, sounds and device monitor reach it through a `pipewire::channel`.
+//! recorder, player, sounds, device monitor and virtual microphone reach it through a
+//! `pipewire::channel`.
 pub mod devices;
+pub mod mic;
 pub mod player;
 pub mod recorder;
 pub mod sounds;
@@ -52,6 +54,26 @@ enum Command {
         app: AppHandle,
     },
     Unwatch(u64),
+    /// A property of the `default` metadata object, as its raw JSON value.
+    MetadataGet {
+        key: &'static str,
+        reply: mpsc::Sender<Result<Option<String>, String>>,
+    },
+    MetadataSet {
+        key: &'static str,
+        value: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    /// Answered once the virtual microphone node is registered.
+    MicCreate(mpsc::Sender<Result<(), String>>),
+    MicDestroy,
+    /// Number of links from the virtual microphone to a consumer.
+    MicLinks(mpsc::Sender<Result<usize, String>>),
+    MicPlay {
+        samples: Vec<i16>,
+        done: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    MicStop,
     /// Carries the serial of the connection that failed, so a late report cannot tear
     /// down a newer connection.
     Disconnected(u64),
@@ -62,12 +84,27 @@ impl Command {
     fn needs_graph(&self) -> bool {
         matches!(
             self,
-            Command::Capture { .. } | Command::ListMicrophones(_) | Command::Play { .. }
+            Command::Capture { .. }
+                | Command::ListMicrophones(_)
+                | Command::Play { .. }
+                | Command::MetadataGet { .. }
+                | Command::MetadataSet { .. }
+                | Command::MicCreate(_)
+                | Command::MicLinks(_)
         )
     }
 
     fn fail(self, message: &str) {
         match self {
+            Command::MetadataGet { reply, .. } => {
+                let _ = reply.send(Err(message.into()));
+            }
+            Command::MetadataSet { reply, .. } | Command::MicCreate(reply) => {
+                let _ = reply.send(Err(message.into()));
+            }
+            Command::MicLinks(reply) => {
+                let _ = reply.send(Err(message.into()));
+            }
             Command::Capture { reply, .. } => {
                 let _ = reply.send(Err(AudioError::DeviceError(message.into())));
             }
@@ -180,7 +217,7 @@ struct Connection {
 struct DefaultMetadata {
     global: u32,
     _listener: pw::metadata::MetadataListener,
-    _proxy: pw::metadata::Metadata,
+    proxy: pw::metadata::Metadata,
 }
 
 struct Graph {
@@ -204,6 +241,12 @@ struct Graph {
     default_source: Option<String>,
     default_sink: Option<String>,
     sink_generation: u64,
+    /// Subject-0 properties of the `default` metadata, raw JSON values by key.
+    metadata_values: HashMap<String, String>,
+    /// Output node of every link, by link id.
+    links: HashMap<u32, u32>,
+    mic: Option<mic::Source>,
+    mic_waiters: Vec<mpsc::Sender<Result<(), String>>>,
     captures: HashMap<u64, recorder::Capture>,
     playbacks: HashMap<u64, player::Playback>,
     watchers: HashMap<u64, Watcher>,
@@ -230,6 +273,10 @@ impl Graph {
             default_source: None,
             default_sink: None,
             sink_generation: 0,
+            metadata_values: HashMap::new(),
+            links: HashMap::new(),
+            mic: None,
+            mic_waiters: Vec::new(),
             captures: HashMap::new(),
             playbacks: HashMap::new(),
             watchers: HashMap::new(),
@@ -320,6 +367,52 @@ impl Graph {
             Command::Unwatch(id) => {
                 self.watchers.remove(&id);
             }
+            Command::MetadataGet { key, reply } => {
+                let _ = reply.send(Ok(self.metadata_values.get(key).cloned()));
+            }
+            Command::MetadataSet { key, value, reply } => {
+                let metadata = self.connection.as_ref().and_then(|c| c.metadata.as_ref());
+                let result = match metadata {
+                    Some(metadata) => {
+                        // The type wpctl and pactl write, so other tools read it back.
+                        metadata.proxy.set_property(
+                            pw::core::PW_ID_CORE,
+                            key,
+                            Some("Spa:String:JSON"),
+                            Some(&value),
+                        );
+                        Ok(())
+                    }
+                    None => Err("PipeWire has no default devices; is WirePlumber running?".into()),
+                };
+                let _ = reply.send(result);
+            }
+            Command::MicCreate(reply) => self.create_mic(reply),
+            Command::MicDestroy => {
+                self.mic = None;
+                for waiter in self.mic_waiters.drain(..) {
+                    let _ = waiter.send(Err("The Dictto Microphone was turned off.".into()));
+                }
+            }
+            Command::MicLinks(reply) => {
+                let registered = self.mic.as_ref().and_then(|mic| mic.registered);
+                let result = match registered {
+                    Some(node) => Ok(self.links.values().filter(|output| **output == node).count()),
+                    None => Err(mic::MISSING.into()),
+                };
+                let _ = reply.send(result);
+            }
+            Command::MicPlay { samples, done } => match self.mic.as_ref() {
+                Some(mic) => mic.play(samples, done),
+                None => {
+                    let _ = done.send(Err(mic::MISSING.into()));
+                }
+            },
+            Command::MicStop => {
+                if let Some(mic) = self.mic.as_ref() {
+                    mic.stop();
+                }
+            }
             Command::Watch { .. } | Command::Disconnected(_) => {}
         }
     }
@@ -351,6 +444,27 @@ impl Graph {
         };
         self.captures.insert(recorder, capture);
         Ok(())
+    }
+
+    fn create_mic(&mut self, reply: mpsc::Sender<Result<(), String>>) {
+        if self.mic.as_ref().is_some_and(|mic| mic.registered.is_some()) {
+            let _ = reply.send(Ok(()));
+            return;
+        }
+        if self.mic.is_none() {
+            let Some(connection) = self.connection.as_ref() else {
+                let _ = reply.send(Err("PipeWire is not connected.".into()));
+                return;
+            };
+            match mic::Source::open(&connection.core) {
+                Ok(source) => self.mic = Some(source),
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                    return;
+                }
+            }
+        }
+        self.mic_waiters.push(reply);
     }
 
     fn sorted_nodes(&self) -> Vec<NodeInfo> {
@@ -466,6 +580,14 @@ impl Graph {
                     form_factor: props.get("device.form-factor").map(str::to_owned),
                 };
                 let candidate = devices::is_capture_candidate(&node);
+                if node.name == devices::VIRTUAL_MIC_NODE {
+                    if let Some(mic) = graph.mic.as_mut() {
+                        mic.registered = Some(global.id);
+                        for waiter in graph.mic_waiters.drain(..) {
+                            let _ = waiter.send(Ok(()));
+                        }
+                    }
+                }
                 graph.nodes.insert(global.id, node);
                 if candidate && graph.synced {
                     graph.track_default(true);
@@ -501,11 +623,16 @@ impl Graph {
                     connection.metadata = Some(DefaultMetadata {
                         global: global.id,
                         _listener: listener,
-                        _proxy: proxy,
+                        proxy,
                     });
                 }
                 if let Ok(seq) = sync {
                     graph.pending_sync = Some(seq);
+                }
+            }
+            pw::types::ObjectType::Link => {
+                if let Some(output) = props.get("link.output.node").and_then(|id| id.parse().ok()) {
+                    graph.links.insert(global.id, output);
                 }
             }
             _ => {}
@@ -516,8 +643,15 @@ impl Graph {
         if let Some(connection) = self.connection.as_mut() {
             if connection.metadata.as_ref().is_some_and(|m| m.global == id) {
                 connection.metadata = None;
+                self.metadata_values.clear();
                 return;
             }
+        }
+        if self.links.remove(&id).is_some() {
+            return;
+        }
+        if let Some(mic) = self.mic.as_mut().filter(|mic| mic.registered == Some(id)) {
+            mic.registered = None;
         }
         let Some(node) = self.nodes.remove(&id) else {
             return;
@@ -533,6 +667,15 @@ impl Graph {
     fn default_changed(&mut self, subject: u32, key: Option<&str>, value: Option<&str>) {
         if subject != pw::core::PW_ID_CORE {
             return;
+        }
+        match (key, value) {
+            (None, _) => self.metadata_values.clear(),
+            (Some(key), Some(value)) => {
+                self.metadata_values.insert(key.into(), value.into());
+            }
+            (Some(key), None) => {
+                self.metadata_values.remove(key);
+            }
         }
         let name = value.and_then(default_name);
         match key {
@@ -590,6 +733,13 @@ impl Graph {
             capture.fail(AudioError::DeviceError("PipeWire disconnected.".into()));
         }
         self.playbacks.clear();
+        // The stream belonged to the lost core; the next MicCreate builds a new one.
+        self.mic = None;
+        for waiter in self.mic_waiters.drain(..) {
+            let _ = waiter.send(Err("PipeWire disconnected.".into()));
+        }
+        self.links.clear();
+        self.metadata_values.clear();
         self.nodes.clear();
         self.default_source = None;
         self.set_default_sink(None);
@@ -625,7 +775,7 @@ impl Graph {
 }
 
 /// Default metadata values are JSON such as `{"name":"alsa_input.pci-0000_00_1f.3"}`.
-fn default_name(value: &str) -> Option<String> {
+pub fn default_name(value: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(value)
         .ok()?
         .get("name")?
@@ -684,6 +834,26 @@ mod tests {
         );
         assert_eq!(default_name("not json"), None);
         assert_eq!(default_name(r#"{"other":1}"#), None);
+    }
+
+    #[test]
+    fn speech_is_converted_to_the_virtual_mic_format() {
+        let mut data = std::io::Cursor::new(Vec::new());
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 24000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::new(&mut data, spec).unwrap();
+        for sample in [0i16, 200, 100, 300, 400, 400] {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+        data.set_position(0);
+        let pcm = Pcm::from_wav(hound::WavReader::new(data).unwrap()).unwrap();
+        assert_eq!(pcm.to_mono(mic::RATE), [100, 150, 200, 300, 400, 400]);
+        assert_eq!(pcm.to_mono(24000), [100, 200, 400]);
     }
 
     #[test]
