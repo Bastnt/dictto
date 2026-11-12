@@ -11,8 +11,9 @@
     <method name="BarStart"/>
     <method name="BarStop"/>
     <method name="BarCancel"/>
-    <!-- While active the shortcut tracker reports chords for the settings UI instead of
-         triggering dictation. -->
+    <!-- Shortcut capture produces no event: while active the daemon's shortcuts are
+         suspended and the settings UI reads the keystrokes itself, then saves the chord
+         with SetSetting("hotkey", ...). -->
     <method name="SetHotkeyCapture">
       <arg name="active" type="b" direction="in"/>
     </method>

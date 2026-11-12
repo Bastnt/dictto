@@ -74,9 +74,31 @@ async fn event_signal_carries_json_payload() {
     assert_eq!(value, json!({ "state": "recording", "level": 3 }));
 }
 
-#[test]
-fn second_instance_requests_settings() {
-    assert_eq!(on_name_taken(), Action::ShowSettingsAndExit);
+#[tokio::test]
+async fn waveform_flood_stays_bounded_and_keeps_state_events() {
+    let (sink, mut events) = event_sink();
+    for i in 0..100_000 {
+        sink(events::WAVEFORM_DATA, json!({ "level": i }));
+    }
+    sink(events::RECORDING_STATE_CHANGED, json!({ "state": "idle" }));
+    let (name, payload) = events.recv().await.unwrap();
+    assert_eq!(name, "waveform-data");
+    assert_eq!(payload, r#"{"level":99999}"#);
+    assert_eq!(events.recv().await.unwrap().0, "recording-state-changed");
+    assert_eq!(events.dropped(), 0);
+    drop(sink);
+    assert!(events.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn state_flood_drops_oldest_and_counts() {
+    let (sink, mut events) = event_sink();
+    for i in 0..(QUEUE_CAPACITY + 10) {
+        sink(events::SETTING_CHANGED, json!({ "n": i }));
+    }
+    assert_eq!(events.dropped(), 10);
+    let (_, first) = events.recv().await.unwrap();
+    assert_eq!(first, r#"{"n":10}"#);
 }
 
 #[tokio::test]
@@ -100,11 +122,11 @@ async fn microphones_flatten_in_documented_order() {
 async fn bar_and_capture_reach_the_backend() {
     let fake = Arc::new(Fake::default());
     let service = service(&fake);
-    service.bar_start().await.unwrap();
-    service.bar_stop().await.unwrap();
-    service.bar_cancel().await.unwrap();
-    service.set_hotkey_capture(true).await.unwrap();
-    service.discover_speech_models(7).await.unwrap();
+    service.bar_start();
+    service.bar_stop();
+    service.bar_cancel();
+    service.set_hotkey_capture(true);
+    service.discover_speech_models(7);
     assert_eq!(*fake.calls.lock().unwrap(), ["start", "stop", "cancel", "capture true"]);
     assert_eq!(fake.generation.load(Ordering::SeqCst), 7);
 }
@@ -183,7 +205,7 @@ async fn private_bus_round_trip() {
 
     // A second process finds the name taken and asks the first to show its settings.
     let second = claim(AppService::new(fake.clone(), || {}, || {})).await.unwrap();
-    assert!(matches!(second, Claim::Secondary(Action::ShowSettingsAndExit)));
+    assert!(matches!(second, Claim::Secondary));
     request_settings().await.unwrap();
     assert_eq!(shown.load(Ordering::SeqCst), 1);
 

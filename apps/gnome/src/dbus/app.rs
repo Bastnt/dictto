@@ -3,10 +3,13 @@
 use super::{APP_BUS_NAME, APP_PATH};
 use dictto_core::audio::MicrophoneInfo;
 use dictto_core::host::async_runtime::{self, JoinHandle};
+use dictto_core::events;
 use dictto_core::Runtime;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc::{self, UnboundedReceiver};
+use std::time::{Duration, Instant};
+use tokio::sync::{oneshot, Notify};
 use zbus::fdo;
 use zbus::object_server::{InterfaceRef, SignalEmitter};
 
@@ -61,22 +64,38 @@ impl AppBackend for Runtime {
 }
 
 type Callback = Box<dyn Fn() + Send + Sync>;
+type Job<B> = Box<dyn FnOnce(&B) + Send>;
 
 pub struct AppService<B: AppBackend> {
     backend: Arc<B>,
+    /// One thread runs every blocking backend call in arrival order, so close calls such
+    /// as two SetSetting cannot overtake each other.
+    worker: std::sync::mpsc::Sender<Job<B>>,
     show_settings: Callback,
     quit: Callback,
     status: Arc<Mutex<String>>,
 }
 
 impl<B: AppBackend> AppService<B> {
+    /// `show_settings` and `quit` run on the bus dispatcher and must not block.
     pub fn new(
         backend: Arc<B>,
         show_settings: impl Fn() + Send + Sync + 'static,
         quit: impl Fn() + Send + Sync + 'static,
     ) -> Self {
+        let (worker, jobs) = std::sync::mpsc::channel::<Job<B>>();
+        let thread_backend = backend.clone();
+        std::thread::Builder::new()
+            .name("dictto-dbus-worker".into())
+            .spawn(move || {
+                while let Ok(job) = jobs.recv() {
+                    job(&thread_backend);
+                }
+            })
+            .expect("spawn D-Bus worker thread");
         Self {
             backend,
+            worker,
             show_settings: Box::new(show_settings),
             quit: Box::new(quit),
             status: Arc::new(Mutex::new("ok".into())),
@@ -88,10 +107,12 @@ impl<B: AppBackend> AppService<B> {
         &self,
         work: impl FnOnce(&B) -> T + Send + 'static,
     ) -> fdo::Result<T> {
-        let backend = self.backend.clone();
-        tokio::task::spawn_blocking(move || work(&backend))
-            .await
-            .map_err(|e| fdo::Error::Failed(e.to_string()))
+        let (reply, answer) = oneshot::channel();
+        let job: Job<B> = Box::new(move |backend| {
+            let _ = reply.send(work(backend));
+        });
+        self.worker.send(job).map_err(|_| fdo::Error::Failed("worker stopped".into()))?;
+        answer.await.map_err(|_| fdo::Error::Failed("worker stopped".into()))
     }
 }
 
@@ -109,20 +130,22 @@ impl<B: AppBackend> AppService<B> {
         (self.quit)();
     }
 
-    async fn bar_start(&self) -> fdo::Result<()> {
-        self.blocking(|b| b.start_recording()).await
+    // The bar, capture and discovery calls only flip state or spawn, so they run inline
+    // and keep call order.
+    fn bar_start(&self) {
+        self.backend.start_recording();
     }
 
-    async fn bar_stop(&self) -> fdo::Result<()> {
-        self.blocking(|b| b.stop_recording()).await
+    fn bar_stop(&self) {
+        self.backend.stop_recording();
     }
 
-    async fn bar_cancel(&self) -> fdo::Result<()> {
-        self.blocking(|b| b.cancel_recording()).await
+    fn bar_cancel(&self) {
+        self.backend.cancel_recording();
     }
 
-    async fn set_hotkey_capture(&self, active: bool) -> fdo::Result<()> {
-        self.blocking(move |b| b.set_hotkey_capture(active)).await
+    fn set_hotkey_capture(&self, active: bool) {
+        self.backend.set_hotkey_capture(active);
     }
 
     async fn set_setting(&self, key: String, value: String) -> fdo::Result<String> {
@@ -153,8 +176,8 @@ impl<B: AppBackend> AppService<B> {
             .collect())
     }
 
-    async fn discover_speech_models(&self, generation: u64) -> fdo::Result<()> {
-        self.blocking(move |b| b.discover_speech_models(generation)).await
+    fn discover_speech_models(&self, generation: u64) {
+        self.backend.discover_speech_models(generation);
     }
 
     #[zbus(signal)]
@@ -166,20 +189,10 @@ impl<B: AppBackend> AppService<B> {
     }
 }
 
-/// What a process does when it starts and finds the bus name taken.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Action {
-    ShowSettingsAndExit,
-}
-
-pub fn on_name_taken() -> Action {
-    Action::ShowSettingsAndExit
-}
-
 pub enum Claim<B: AppBackend> {
     Owner(Served<B>),
-    /// Another daemon owns the name; see `request_settings`.
-    Secondary(Action),
+    /// Another daemon owns the name: call `request_settings` and exit.
+    Secondary,
 }
 
 /// Registered service plus the handles needed to publish through it.
@@ -207,7 +220,7 @@ pub async fn claim<B: AppBackend>(service: AppService<B>) -> zbus::Result<Claim<
             let interface = connection.object_server().interface(APP_PATH).await?;
             Ok(Claim::Owner(Served { connection, interface, status }))
         }
-        Err(zbus::Error::NameTaken) => Ok(Claim::Secondary(on_name_taken())),
+        Err(zbus::Error::NameTaken) => Ok(Claim::Secondary),
         Err(error) => Err(error),
     }
 }
@@ -245,35 +258,116 @@ impl<B: AppBackend> Served<B> {
     pub fn forward_events(&self, mut events: EventReceiver) -> JoinHandle<()> {
         let interface = self.interface.clone();
         async_runtime::spawn(async move {
+            let mut last_warn: Option<Instant> = None;
+            let mut suppressed = 0u32;
             while let Some((name, payload)) = events.recv().await {
                 if let Err(error) =
                     AppService::<B>::event(interface.signal_emitter(), &name, &payload).await
                 {
-                    log::warn!("cannot emit event {name}: {error}");
+                    if last_warn.is_none_or(|t| t.elapsed() >= WARN_INTERVAL) {
+                        log::warn!("cannot emit event {name}: {error} ({suppressed} similar suppressed)");
+                        last_warn = Some(Instant::now());
+                        suppressed = 0;
+                    } else {
+                        suppressed += 1;
+                    }
                 }
             }
         })
     }
 }
 
+const WARN_INTERVAL: Duration = Duration::from_secs(10);
+/// Pending events before the oldest start being dropped; state events are rare, so
+/// reaching this means nobody drains the queue.
+const QUEUE_CAPACITY: usize = 256;
+
+#[derive(Default)]
+struct Queue {
+    pending: VecDeque<(String, String)>,
+    dropped: u64,
+    closed: bool,
+}
+
+struct Shared {
+    queue: Mutex<Queue>,
+    ready: Notify,
+}
+
 pub struct EventReceiver {
-    rx: UnboundedReceiver<(String, String)>,
+    shared: Arc<Shared>,
 }
 
 impl EventReceiver {
     pub async fn recv(&mut self) -> Option<(String, String)> {
-        self.rx.recv().await
+        loop {
+            {
+                let mut queue = self.shared.queue.lock().ok()?;
+                if let Some(event) = queue.pending.pop_front() {
+                    return Some(event);
+                }
+                if queue.closed {
+                    return None;
+                }
+            }
+            self.shared.ready.notified().await;
+        }
+    }
+
+    /// Events discarded because the queue was full.
+    pub fn dropped(&self) -> u64 {
+        self.shared.queue.lock().map(|q| q.dropped).unwrap_or(0)
     }
 }
 
-/// The sink handed to `Runtime::new`. It only queues, so any core thread can call it
-/// without touching the bus; `Served::forward_events` drains the queue once connected.
+struct SinkHandle(Arc<Shared>);
+
+impl SinkHandle {
+    fn push(&self, name: &str, payload: String) {
+        let Ok(mut queue) = self.0.queue.lock() else { return };
+        let entry = (name.to_string(), payload);
+        if name == events::WAVEFORM_DATA {
+            // Only the newest frame matters; an older pending one is replaced in place.
+            if let Some(slot) = queue.pending.iter_mut().find(|(n, _)| n == events::WAVEFORM_DATA) {
+                *slot = entry;
+                drop(queue);
+                self.0.ready.notify_one();
+                return;
+            }
+        }
+        if queue.pending.len() >= QUEUE_CAPACITY {
+            // A waveform frame is the cheapest loss; otherwise the oldest event goes.
+            let victim = queue
+                .pending
+                .iter()
+                .position(|(n, _)| n == events::WAVEFORM_DATA)
+                .unwrap_or(0);
+            queue.pending.remove(victim);
+            queue.dropped += 1;
+        }
+        queue.pending.push_back(entry);
+        drop(queue);
+        self.0.ready.notify_one();
+    }
+}
+
+impl Drop for SinkHandle {
+    fn drop(&mut self) {
+        if let Ok(mut queue) = self.0.queue.lock() {
+            queue.closed = true;
+        }
+        self.0.ready.notify_one();
+    }
+}
+
+/// The sink handed to `Runtime::new`. It only queues into a bounded buffer, so any core
+/// thread can call it without touching the bus or blocking; `Served::forward_events`
+/// drains the queue once connected.
 pub fn event_sink() -> (impl Fn(&str, serde_json::Value) + Send + Sync + 'static, EventReceiver) {
-    let (tx, rx) = mpsc::unbounded_channel();
-    let sink = move |name: &str, payload: serde_json::Value| {
-        let _ = tx.send((name.to_string(), payload.to_string()));
-    };
-    (sink, EventReceiver { rx })
+    let shared = Arc::new(Shared { queue: Mutex::new(Queue::default()), ready: Notify::new() });
+    let handle = SinkHandle(shared.clone());
+    let sink = move |name: &str, payload: serde_json::Value| handle.push(name, payload.to_string());
+    (sink, EventReceiver { shared })
 }
 
 #[cfg(test)]
