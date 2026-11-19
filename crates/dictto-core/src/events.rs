@@ -14,3 +14,5 @@ pub const SPEECH_ERROR: &str = "speech-error";
 pub const SETTING_CHANGED: &str = "setting-changed";
 /// `{ "generation": u64, "models": [..] }` or `{ "generation": u64, "error": String }`
 pub const SPEECH_CATALOG: &str = "speech-catalog";
+/// `{ "generation": u64, "models": [String] }` or `{ "generation": u64, "error": String }`
+pub const TRANSCRIPTION_CATALOG: &str = "transcription-catalog";

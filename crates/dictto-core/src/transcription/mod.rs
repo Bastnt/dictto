@@ -1,3 +1,4 @@
+pub mod catalog;
 pub mod openai_api;
 
 use async_trait::async_trait;

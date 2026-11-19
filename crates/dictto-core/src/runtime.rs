@@ -222,6 +222,24 @@ impl Runtime {
             )
             .map_err(|e| e.to_string())
     }
+    /// Transcription model IDs advertised by the configured endpoint.
+    pub async fn transcription_models(&self) -> Result<Vec<String>, String> {
+        let base = self.get_settings()?.remove("api_base_url").ok_or("Set an API base URL first")?;
+        let key = crate::db::keystore::get_api_key()?;
+        crate::transcription::catalog::discover(&self.inner.core.http_client, &base, &key).await
+    }
+    /// `transcription_models` for hosts without an async caller; answers with
+    /// `TRANSCRIPTION_CATALOG` so a stale reply can be told apart by its generation.
+    pub fn discover_transcription_models(&self, generation: u64) {
+        let runtime = self.clone();
+        host::async_runtime::spawn(async move {
+            let payload = match runtime.transcription_models().await {
+                Ok(models) => serde_json::json!({"generation": generation, "models": models}),
+                Err(error) => serde_json::json!({"generation": generation, "error": error}),
+            };
+            let _ = runtime.inner.app.emit(events::TRANSCRIPTION_CATALOG, payload);
+        });
+    }
     #[cfg(feature = "speech")]
     pub fn discover_speech_models(&self, generation: u64) {
         let runtime = self.clone();
