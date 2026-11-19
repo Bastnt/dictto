@@ -42,3 +42,8 @@ pub fn get_api_key_hint() -> Result<String, String> {
         Ok("••••••••".to_string())
     }
 }
+
+#[tauri::command]
+pub async fn get_transcription_models(runtime: State<'_, Runtime>) -> Result<Vec<String>, String> {
+    runtime.transcription_models().await
+}

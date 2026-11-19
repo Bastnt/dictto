@@ -258,6 +258,13 @@ export async function mountSettings(root, api = platform) {
     const heading = element('div', 'settings-field-heading');
     const labelNode = element('label', 'settings-label', label); labelNode.htmlFor = key;
     heading.append(labelNode);
+    if (key === 'transcription_model') {
+      field.append(heading, transcriptionPicker(fallback));
+      panels.api.append(field);
+      settingSwitch(heading, 'transcription_warmup', 'Warm transcription model');
+      field.append(element('p', 'settings-description', 'Refresh lists the transcription models the API advertises. Warm-up sends 1 second of silence at startup and recording start; provider charges may apply.'));
+      continue;
+    }
     const input = element('input', 'settings-input'); input.id = key;
     register(key, () => { if (!dirty.has(key) && document.activeElement !== input) input.value = settings[key] || fallback; });
     input.addEventListener('input', () => dirty.add(key));
@@ -275,15 +282,49 @@ export async function mountSettings(root, api = platform) {
       endpoint.append(field, keySection);
       field.append(element('p', 'settings-description', 'Include /v1. Used for transcription and cleanup.'));
     } else panels.api.append(field);
-    if (key === 'transcription_model') {
-      settingSwitch(heading, 'transcription_warmup', 'Warm transcription model');
-      field.append(element('p', 'settings-description', 'Warm-up sends 1 second of silence at startup and recording start; provider charges may apply.'));
-    }
     if (key === 'llm_model') {
       settingSwitch(heading, 'cleanup_enabled', 'Text cleanup', undefined, true);
       field.append(element('p', 'settings-description', 'When disabled, paste the original transcript without an extra model call.'));
       register('cleanup_enabled', () => { input.disabled = settings.cleanup_enabled === 'false'; });
     }
+  }
+  // Offers only the saved model until Refresh asks the API which models it serves, so
+  // opening the page sends no request and a refresh never switches models by itself.
+  function transcriptionPicker(fallback) {
+    let models = [];
+    let generation = 0;
+    const wrap = element('div', 'settings-actions settings-model-picker');
+    const select = element('select', 'settings-input'); select.id = 'transcription_model';
+    const refresh = button('Refresh', async () => {
+      const mine = ++generation;
+      refresh.disabled = true; refresh.textContent = 'Loading…';
+      try {
+        const found = await api.invoke('get_transcription_models');
+        if (disposed || mine !== generation) return;
+        models = found;
+        if (!models.length) report('This API advertises no transcription models.');
+        else error.hidden = true;
+        render();
+      } finally {
+        if (!disposed && mine === generation) { refresh.disabled = false; refresh.textContent = 'Refresh'; }
+      }
+    });
+    refresh.setAttribute('aria-label', 'Refresh transcription models');
+    function render() {
+      const saved = settings.transcription_model || fallback;
+      const options = models.includes(saved) ? models : [saved, ...models];
+      select.replaceChildren(...options.map((id) => {
+        const option = element('option', '', models.length && !models.includes(id) ? `${id} (not advertised)` : id);
+        option.value = id;
+        return option;
+      }));
+      select.value = saved;
+    }
+    select.addEventListener('change', () => { void run(() => save('transcription_model', select.value)).then((ok) => { if (ok === false) render(); }); });
+    register('transcription_model', render);
+    register('api_base_url', () => { generation++; models = []; refresh.disabled = false; refresh.textContent = 'Refresh'; render(); });
+    wrap.append(select, refresh);
+    return wrap;
   }
   function renderKeyEditor(edit = !hasKey) {
     const heading = element('div', 'settings-field-heading');

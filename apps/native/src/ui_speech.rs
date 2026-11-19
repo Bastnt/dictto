@@ -15,7 +15,7 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
 ];
 
 impl App {
-    unsafe fn combo(&mut self, id: usize, labels: &[String], selected: usize, rect: [i32; 4]) {
+    pub(super) unsafe fn combo(&mut self, id: usize, labels: &[String], selected: usize, rect: [i32; 4]) {
         let hwnd = self.add(
             id,
             w!("COMBOBOX"),

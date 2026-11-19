@@ -21,6 +21,8 @@ use windows::{
 use dictto_core::settings_model as models;
 #[path = "ui_speech.rs"]
 mod speech;
+#[path = "ui_api.rs"]
+mod api;
 use dictto_native::speech_api::SpeechModel;
 
 const TRAY: u32 = WM_APP + 42;
@@ -36,7 +38,6 @@ const CHECKS: &[(usize, &str)] = &[
 const FIELDS: &[(usize, &str)] = &[
     (200, "hotkey"),
     (201, "api_base_url"),
-    (202, "transcription_model"),
     (203, "llm_model"),
     (204, "recording_limit_seconds"),
     (205, "paste_delay_ms"),
@@ -60,6 +61,7 @@ struct App {
     speech_models: Vec<SpeechModel>,
     catalog_generation: u64,
     catalog_loading: bool,
+    transcription: api::TranscriptionCatalog,
     microphones: Vec<String>,
     languages: Vec<String>,
     smoke: bool,
@@ -414,7 +416,7 @@ impl App {
                     self.drafts.get("transcription_warmup").map(String::as_str) == Some("true"),
                     [395, 166, 240, 28],
                 );
-                self.edit(202, "transcription_model", [20, 200, 614, 28]);
+                self.render_transcription_model([20, 200, 614, 28]);
                 self.label(
                     "Warm-up sends 1 second of silence; provider charges may apply.",
                     [20, 235, 614, 22],
@@ -431,7 +433,7 @@ impl App {
                     self.control(203),
                     self.drafts.get("cleanup_enabled").map(String::as_str) == Some("true"),
                 );
-                self.button(320, "Save models", [510, 346, 124, 30]);
+                self.button(320, "Save model", [510, 346, 124, 30]);
                 self.label(
                     "When cleanup is off, paste the original transcript.",
                     [20, 349, 475, 22],
@@ -535,6 +537,7 @@ impl App {
             Ok(()) => {
                 self.drafts.insert(key.into(), value.into());
                 if key == "api_base_url" {
+                    self.transcription.forget();
                     self.speech_models.clear();
                     self.catalog_generation += 1;
                     self.catalog_loading = false;
@@ -557,7 +560,7 @@ impl App {
             self.runtime.set_hotkey_capture(false);
             return;
         }
-        if self.speech_command(id, notification) {
+        if self.api_command(id, notification) || self.speech_command(id, notification) {
             self.label_text(STATUS, &self.status);
             return;
         }
@@ -660,9 +663,7 @@ impl App {
                     }
                 }
                 320 => {
-                    if self.persist("transcription_model", &self.text(202)) {
-                        self.persist("llm_model", &self.text(203));
-                    }
+                    self.persist("llm_model", &self.text(203));
                 }
                 401 => self.render(),
                 410 if !self.smoke => self.runtime.start_recording(),
@@ -703,6 +704,10 @@ impl App {
         while let Ok((name, payload)) = self.events.try_recv() {
             if name == events::SPEECH_CATALOG {
                 self.receive_speech_models(payload);
+                continue;
+            }
+            if name == events::TRANSCRIPTION_CATALOG {
+                self.receive_transcription_models(payload);
                 continue;
             }
             if name == events::AUDIO_DEVICES_CHANGED {
@@ -765,6 +770,7 @@ unsafe extern "system" fn window_proc(
             (*pointer).window = HWND::default();
             (*pointer).catalog_generation += 1;
             (*pointer).catalog_loading = false;
+            (*pointer).transcription.forget();
             (*pointer).children.clear();
             (*pointer).drafts.clear();
             let _ = DeleteObject((*pointer).font.into());
@@ -946,6 +952,7 @@ pub fn run() -> Result<(), String> {
                 | events::RECORDING_STATE_CHANGED
                 | "processing-state"
                 | events::SPEECH_CATALOG
+                | events::TRANSCRIPTION_CATALOG
                 | events::AUDIO_DEVICES_CHANGED
         ) {
             let _ = tx.send((name.into(), payload));
@@ -1028,6 +1035,7 @@ unsafe fn run_windows(
         speech_models: Vec::new(),
         catalog_generation: 0,
         catalog_loading: false,
+        transcription: Default::default(),
         microphones: Vec::new(),
         languages: Vec::new(),
         smoke,
@@ -1146,6 +1154,7 @@ mod tests {
                     speech_models: Vec::new(),
         catalog_generation: 0,
         catalog_loading: false,
+        transcription: Default::default(),
         microphones: Vec::new(),
                     languages: Vec::new(),
                     smoke: true,
@@ -1176,15 +1185,32 @@ mod tests {
                     app.runtime.get_settings().unwrap()["api_base_url"],
                     "http://localhost:1234/v1"
                 );
-                app.label_text(202, "draft-model");
+                // Until a refresh the saved model is the only choice.
+                assert_eq!(SendMessageW(app.control(202), CB_GETCOUNT, None, None).0, 1);
+                assert_eq!(app.text(202), "gpt-4o-mini-transcribe");
+                let transcription = |app: &mut App, payload: Value| {
+                    let mut payload = payload;
+                    payload["generation"] = app.transcription_generation().into();
+                    events_tx.send((events::TRANSCRIPTION_CATALOG.into(), payload)).unwrap();
+                    SendMessageW(app.host, EVENTS, None, None);
+                };
+                app.command(206, BN_CLICKED);
+                assert!(!IsWindowEnabled(app.control(206)).as_bool());
+                transcription(&mut app, serde_json::json!({"models": ["canary-1b-v2", "whisper-1"]}));
+                assert!(IsWindowEnabled(app.control(206)).as_bool());
+                assert_eq!(SendMessageW(app.control(202), CB_GETCOUNT, None, None).0, 3);
+                assert_eq!(app.text(202), "gpt-4o-mini-transcribe (not advertised)");
+                SendMessageW(app.control(202), CB_SETCURSEL, Some(WPARAM(2)), None);
+                app.command(202, CBN_SELCHANGE);
+                assert_eq!(app.runtime.get_settings().unwrap()["transcription_model"], "whisper-1");
                 app.command(10, BN_CLICKED);
                 app.command(12, BN_CLICKED);
-                assert_eq!(app.text(202), "draft-model");
-                app.command(320, BN_CLICKED);
-                assert_eq!(
-                    app.runtime.get_settings().unwrap()["transcription_model"],
-                    "draft-model"
-                );
+                assert_eq!(SendMessageW(app.control(202), CB_GETCOUNT, None, None).0, 2);
+                assert_eq!(app.text(202), "whisper-1");
+                app.command(206, BN_CLICKED);
+                transcription(&mut app, serde_json::json!({"error": "unauthorized"}));
+                assert!(app.status.contains("unauthorized"));
+                assert_eq!(app.text(202), "whisper-1");
                 let catalog = serde_json::json!([
                     {"id":"qwen3-tts","name":"Qwen","capabilities":{
                         "modes":{"speaker":["worker"]},"voice_fields":{"speaker":["voice","voice_instruction"]},

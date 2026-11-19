@@ -33,11 +33,32 @@ describe('native settings', () => {
     expect(api.invoke).toHaveBeenCalledWith('set_api_key', { apiKey: 'new-secret' });
     expect(byLabel('API Key').readOnly).toBe(true);
     expect(byLabel('API Key').value).toBe('sk-…1234');
+  });
+
+  it('offers the saved transcription model until a refresh lists the advertised ones', async () => {
+    const original = api.invoke.getMockImplementation();
+    api.invoke.mockImplementation(async (command, args) => command === 'get_transcription_models' ? ['canary-1b-v2', 'whisper-1'] : original(command, args));
+    dispose = await mountSettings(root, api); clickText('API');
     const model = root.querySelector('#transcription_model');
-    model.focus(); model.value = ' custom-transcriber '; model.dispatchEvent(new Event('input'));
-    model.blur(); await flush();
-    expect(api.invoke).toHaveBeenCalledWith('set_setting', { key: 'transcription_model', value: 'custom-transcriber' });
-    expect(model.value).toBe('custom-transcriber');
+    expect([...model.options].map((o) => o.value)).toEqual(['gpt-4o-mini-transcribe']);
+    expect(api.invoke).not.toHaveBeenCalledWith('get_transcription_models');
+    byLabel('Refresh transcription models').click(); await flush();
+    expect([...model.options].map((o) => o.textContent)).toEqual(['gpt-4o-mini-transcribe (not advertised)', 'canary-1b-v2', 'whisper-1']);
+    expect(model.value).toBe('gpt-4o-mini-transcribe');
+    model.value = 'whisper-1'; model.dispatchEvent(new Event('change')); await flush();
+    expect(api.invoke).toHaveBeenCalledWith('set_setting', { key: 'transcription_model', value: 'whisper-1' });
+    expect([...model.options].map((o) => o.value)).toEqual(['canary-1b-v2', 'whisper-1']);
+    expect(model.value).toBe('whisper-1');
+  });
+
+  it('keeps the selection and reports a failed refresh', async () => {
+    const original = api.invoke.getMockImplementation();
+    api.invoke.mockImplementation(async (command, args) => { if (command === 'get_transcription_models') throw new Error('unauthorized'); return original(command, args); });
+    dispose = await mountSettings(root, api); clickText('API');
+    byLabel('Refresh transcription models').click(); await flush();
+    expect(root.querySelector('[role="alert"]').textContent).toBe('unauthorized');
+    expect(root.querySelector('#transcription_model').value).toBe('gpt-4o-mini-transcribe');
+    expect(byLabel('Refresh transcription models').disabled).toBe(false);
   });
 
   it('uses one checkbox switch class and preserves cleanup/warmup defaults', async () => {
@@ -51,12 +72,15 @@ describe('native settings', () => {
 
   it('keeps input drafts and focus when settings events arrive', async () => {
     dispose = await mountSettings(root, api); clickText('API');
-    const input = root.querySelector('#transcription_model');
+    const input = root.querySelector('#llm_model');
     input.focus(); input.value = 'draft-model'; input.dispatchEvent(new Event('input'));
+    handlers['setting-changed']({ payload: { key: 'llm_model', value: 'external-model' } });
+    expect(root.querySelector('#transcription_model').value).toBe('gpt-4o-mini-transcribe');
     handlers['setting-changed']({ payload: { key: 'transcription_model', value: 'external-model' } });
+    expect(root.querySelector('#transcription_model').value).toBe('external-model');
     handlers['setting-changed']({ payload: { key: 'cleanup_enabled', value: 'false' } });
     expect(document.activeElement).toBe(input); expect(input.value).toBe('draft-model');
-    expect(root.querySelector('#llm_model').disabled).toBe(true);
+    expect(input.disabled).toBe(true);
   });
 
   it('keeps language drafts open and shows save failures', async () => {

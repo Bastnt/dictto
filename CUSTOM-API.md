@@ -7,7 +7,7 @@ Open **Settings > API** to configure:
 | --- | --- |
 | API base URL | Endpoint base including `/v1`, for example `http://127.0.0.1:8000/v1` |
 | API Key | Credential required by the selected endpoint |
-| Transcription model | Model ID served by `/audio/transcriptions` |
+| Transcription model | Model ID served by `/audio/transcriptions`; **Refresh** lists the ones the endpoint advertises in `/models` |
 | Cleanup model | Model ID served by `/chat/completions` |
 | Text cleanup | Disable to paste the original transcript without a chat request |
 
