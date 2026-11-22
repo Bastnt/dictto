@@ -23,25 +23,53 @@ use dictto_core::settings_model as models;
 mod speech;
 #[path = "ui_api.rs"]
 mod api;
+#[path = "ui_keys.rs"]
+mod keys;
 use dictto_native::speech_api::SpeechModel;
 
 const TRAY: u32 = WM_APP + 42;
 const EVENTS: u32 = WM_APP + 43;
 const OPEN: u32 = WM_APP + 44;
 const STATUS: usize = 90;
+// Secondary text, drawn dimmer than labels.
+const HINT: usize = 91;
+const TAB: usize = 10;
+const TABS: &[&str] = &["General", "Dictation", "Voice", "Shortcuts", "Connection"];
+const GENERAL: usize = 0;
+const DICTATION: usize = 1;
+const VOICE: usize = 2;
+const SHORTCUTS: usize = 3;
+const CONNECTION: usize = 4;
+// Reached from General, not from a tab.
+const LANGUAGES: usize = 5;
+const CHOOSE_LANGUAGES: usize = 16;
+const LANGUAGES_DONE: usize = 17;
 const CHECKS: &[(usize, &str)] = &[
     (100, "auto_start"),
     (101, "sound_effects_enabled"),
     (102, "transcription_warmup"),
     (103, "cleanup_enabled"),
 ];
-const FIELDS: &[(usize, &str)] = &[
-    (200, "hotkey"),
-    (201, "api_base_url"),
-    (203, "llm_model"),
-    (204, "recording_limit_seconds"),
-    (205, "paste_delay_ms"),
+const MICROPHONE: usize = 400;
+const RECORDING_LIMIT: usize = 204;
+const PASTE_DELAY: usize = 205;
+const LIMITS: &[(&str, &str)] = &[
+    ("60", "1 minute"),
+    ("120", "2 minutes"),
+    ("300", "5 minutes"),
+    ("600", "10 minutes"),
+    ("1800", "30 minutes"),
 ];
+const DELAYS: &[(&str, &str)] = &[
+    ("0", "None"),
+    ("50", "50 ms"),
+    ("150", "150 ms"),
+    ("300", "300 ms"),
+    ("500", "500 ms"),
+];
+// Client area in 96-dpi pixels; content spans x 20..634, controls start at x 240.
+const WIDTH: i32 = 654;
+const HEIGHT: i32 = 470;
 
 struct App {
     runtime: Runtime,
@@ -49,6 +77,8 @@ struct App {
     host: HWND,
     window: HWND,
     children: Vec<(usize, HWND)>,
+    // Combo id -> (setting key, value of each item): picking an item saves it.
+    bound: HashMap<usize, (String, Vec<String>)>,
     drafts: HashMap<String, String>,
     page: usize,
     font: HFONT,
@@ -61,8 +91,9 @@ struct App {
     speech_models: Vec<SpeechModel>,
     catalog_generation: u64,
     catalog_loading: bool,
-    transcription: api::TranscriptionCatalog,
-    microphones: Vec<String>,
+    models: api::Models,
+    engine_fields: Vec<(String, String)>,
+    capture: Option<String>,
     languages: Vec<String>,
     smoke: bool,
     status: String,
@@ -80,6 +111,34 @@ fn dark_theme() -> bool {
 }
 
 impl App {
+    fn new(runtime: Runtime, events: mpsc::Receiver<(String, Value)>, icon: HICON, smoke: bool) -> Self {
+        App {
+            runtime,
+            events,
+            host: HWND::default(),
+            window: HWND::default(),
+            children: Vec::new(),
+            bound: HashMap::new(),
+            drafts: HashMap::new(),
+            page: GENERAL,
+            font: HFONT::default(),
+            background: HBRUSH::default(),
+            input_background: HBRUSH::default(),
+            dark: false,
+            dpi: 96,
+            icon,
+            taskbar_message: 0,
+            speech_models: Vec::new(),
+            catalog_generation: 0,
+            catalog_loading: false,
+            models: Default::default(),
+            engine_fields: Vec::new(),
+            capture: None,
+            languages: Vec::new(),
+            smoke,
+            status: String::new(),
+        }
+    }
     fn scale(&self, value: i32) -> i32 {
         value * self.dpi as i32 / 96
     }
@@ -99,17 +158,8 @@ impl App {
     unsafe fn label_text(&self, id: usize, text: &str) {
         let _ = SetWindowTextW(self.control(id), PCWSTR(wide(text).as_ptr()));
     }
-    unsafe fn key_hint(&self) {
-        let hint = self
-            .runtime
-            .key_hint()
-            .unwrap_or_else(|_| "Enter API key".into());
-        SendMessageW(
-            self.control(210),
-            EM_SETCUEBANNER,
-            Some(WPARAM(1)),
-            Some(LPARAM(wide(&hint).as_ptr() as isize)),
-        );
+    fn setting(&self, key: &str) -> &str {
+        self.drafts.get(key).map_or("", String::as_str)
     }
     unsafe fn add(
         &mut self,
@@ -147,6 +197,9 @@ impl App {
     unsafe fn label(&mut self, text: &str, rect: [i32; 4]) {
         self.add(0, w!("STATIC"), text, WINDOW_STYLE::default(), rect);
     }
+    unsafe fn hint(&mut self, text: &str, rect: [i32; 4]) {
+        self.add(HINT, w!("STATIC"), text, WINDOW_STYLE::default(), rect);
+    }
     unsafe fn button(&mut self, id: usize, text: &str, rect: [i32; 4]) {
         self.add(
             id,
@@ -168,28 +221,68 @@ impl App {
         let _ = SetWindowTheme(hwnd, w!(""), w!(""));
         SendMessageW(hwnd, BM_SETCHECK, Some(WPARAM(value as usize)), None);
     }
-    unsafe fn edit(&mut self, id: usize, key: &str, rect: [i32; 4]) {
-        let value = self.drafts.get(key).cloned().unwrap_or_default();
-        self.add(
+    unsafe fn setting_check(&mut self, id: usize, text: &str, rect: [i32; 4]) {
+        let key = CHECKS.iter().find(|(i, _)| *i == id).unwrap().1;
+        let value = self.setting(key) == "true";
+        self.check(id, text, value, rect);
+    }
+    unsafe fn edit(&mut self, id: usize, value: &str, cue: &str, rect: [i32; 4]) -> HWND {
+        let hwnd = self.add(
             id,
             w!("EDIT"),
-            &value,
+            value,
             WS_TABSTOP | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
             rect,
         );
+        self.cue(hwnd, cue);
+        hwnd
     }
-    unsafe fn capture_drafts(&mut self) {
-        self.capture_engine_draft();
-        for &(id, key) in FIELDS {
-            if !self.control(id).0.is_null() {
-                self.drafts.insert(key.into(), self.text(id));
-            }
+    unsafe fn cue(&self, hwnd: HWND, cue: &str) {
+        SendMessageW(
+            hwnd,
+            EM_SETCUEBANNER,
+            Some(WPARAM(1)),
+            Some(LPARAM(wide(cue).as_ptr() as isize)),
+        );
+    }
+    unsafe fn combo(&mut self, id: usize, labels: &[String], selected: usize, rect: [i32; 4]) {
+        let hwnd = self.add(
+            id,
+            w!("COMBOBOX"),
+            "",
+            WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+            rect,
+        );
+        for label in labels {
+            SendMessageW(
+                hwnd,
+                CB_ADDSTRING,
+                None,
+                Some(LPARAM(wide(label).as_ptr() as isize)),
+            );
         }
-        for (i, (key, _)) in speech::SHORTCUTS.iter().enumerate() {
-            if !self.control(630 + i).0.is_null() {
-                self.drafts.insert((*key).into(), self.text(630 + i));
-            }
+        SendMessageW(hwnd, CB_SETCURSEL, Some(WPARAM(selected)), None);
+    }
+    /// A list that saves `key` when an item is picked. A saved value missing from
+    /// `options` stays first, labelled with `missing`, so opening never changes it.
+    unsafe fn bound_combo(
+        &mut self,
+        id: usize,
+        key: &str,
+        mut options: Vec<(String, String)>,
+        missing: &str,
+        rect: [i32; 4],
+    ) {
+        let saved = self.setting(key).to_string();
+        if !options.iter().any(|(value, _)| *value == saved) {
+            let label = if missing.is_empty() { saved.clone() } else { format!("{saved} {missing}") };
+            options.insert(0, (saved.clone(), label));
         }
+        let selected = options.iter().position(|(value, _)| *value == saved).unwrap_or(0);
+        let labels: Vec<String> = options.iter().map(|(_, label)| label.clone()).collect();
+        self.combo(id, &labels, selected, rect);
+        self.bound
+            .insert(id, (key.into(), options.into_iter().map(|(value, _)| value).collect()));
     }
     unsafe fn theme(&mut self) {
         self.dark = dark_theme();
@@ -209,6 +302,17 @@ impl App {
             let _ = InvalidateRect(Some(self.window), None, true);
         }
     }
+    /// Asks the endpoint for its models once per endpoint and key; the lists then stay
+    /// until Refresh, across window closes.
+    fn autoload(&mut self) {
+        if self.smoke || !self.runtime.has_key() {
+            return;
+        }
+        self.autoload_models();
+        if self.speech_models.is_empty() && !self.catalog_loading {
+            self.refresh_speech_models();
+        }
+    }
     unsafe fn show(&mut self) -> Result<(), String> {
         if !self.window.0.is_null() {
             let _ = ShowWindow(self.window, SW_RESTORE);
@@ -216,13 +320,14 @@ impl App {
             return Ok(());
         }
         self.drafts = self.runtime.get_settings()?;
-        self.page = 0;
+        self.page = if self.runtime.has_key() { GENERAL } else { CONNECTION };
+        self.autoload();
         self.dpi = GetDpiForSystem();
         let mut rect = RECT {
             left: 0,
             top: 0,
-            right: self.scale(660),
-            bottom: self.scale(440),
+            right: self.scale(WIDTH),
+            bottom: self.scale(HEIGHT),
         };
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         AdjustWindowRectExForDpi(
@@ -236,7 +341,7 @@ impl App {
         self.window = CreateWindowExW(
             WS_EX_CONTROLPARENT,
             w!("Dictto.Win32.Settings"),
-            w!("Dictto Native"),
+            w!("Dictto Settings"),
             style,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -282,224 +387,135 @@ impl App {
     }
     unsafe fn render(&mut self) {
         self.runtime.set_hotkey_capture(false);
-        for (_, hwnd) in self.children.drain(..) {
+        self.capture = None;
+        // Taken first: a focused edit reports EN_KILLFOCUS while it is destroyed, and its
+        // handler must then find no control rather than read a half-destroyed one.
+        for (_, hwnd) in std::mem::take(&mut self.children) {
             let _ = DestroyWindow(hwnd);
         }
-        self.label("Settings", [20, 16, 220, 28]);
-        for (i, (id, text)) in [(10, "General"), (11, "Audio"), (12, "API"), (14, "Speech"), (15, "Shortcuts")].into_iter().enumerate() {
-            self.button(id, text, [194 + i as i32 * 89, 12, 84, 30]);
+        self.bound.clear();
+        let tab_page = if self.page == LANGUAGES { GENERAL } else { self.page };
+        let has_key = self.runtime.has_key();
+        for (i, name) in TABS.iter().enumerate() {
+            let name = if i == CONNECTION && !has_key { "Connection (!)" } else { name };
+            let group = if i == 0 { WS_GROUP } else { WINDOW_STYLE::default() };
+            let hwnd = self.add(
+                TAB + i,
+                w!("BUTTON"),
+                name,
+                WS_TABSTOP | group | WINDOW_STYLE((BS_AUTORADIOBUTTON | BS_PUSHLIKE) as u32),
+                [20 + i as i32 * 123, 14, 117, 30],
+            );
+            SendMessageW(hwnd, BM_SETCHECK, Some(WPARAM((i == tab_page) as usize)), None);
         }
         match self.page {
-            0 => {
-                for (id, y, title, description) in [
-                    (100, 66, "Start on boot", "Launch Dictto when you sign in"),
-                    (101, 124, "Sound effects", "Play sounds on recording events"),
-                ] {
-                    self.label(title, [20, y, 300, 22]);
-                    self.label(description, [20, y + 23, 390, 20]);
-                    self.check(
-                        id,
-                        "Enabled",
-                        self.drafts
-                            .get(CHECKS.iter().find(|(i, _)| *i == id).unwrap().1)
-                            .map(String::as_str)
-                            == Some("true"),
-                        [530, y + 5, 105, 28],
-                    );
-                }
-                self.label("Languages", [20, 188, 155, 22]);
-                let languages: Vec<String> = serde_json::from_str(
-                    self.drafts
-                        .get("languages")
-                        .map(String::as_str)
-                        .unwrap_or("[]"),
-                )
-                .unwrap_or_default();
-                let summary = if languages.is_empty() || languages.iter().any(|v| v == "auto") {
-                    "Auto-detect".into()
-                } else {
-                    languages.join(", ")
-                };
-                self.label(&summary, [180, 188, 340, 22]);
-                self.button(13, "Change", [546, 183, 88, 30]);
-                self.label("Push-to-talk hotkey", [20, 245, 250, 22]);
-                self.edit(200, "hotkey", [315, 241, 225, 28]);
-                self.button(300, "Save", [550, 240, 84, 30]);
-                self.label(
-                    "Hold to dictate; double-press for continuous recording.",
-                    [20, 282, 590, 22],
-                );
-            }
-            1 => {
-                self.label("Microphone", [20, 65, 200, 22]);
-                self.microphones = vec!["auto-detect".into()];
-                match self.runtime.microphones() {
-                    Ok(items) => self.microphones.extend(items.into_iter().map(|m| m.name)),
-                    Err(e) => self.status = e,
-                }
-                let combo = self.add(
-                    400,
-                    w!("COMBOBOX"),
-                    "",
-                    WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
-                    [200, 61, 434, 250],
-                );
-                for (index, mic) in self.microphones.iter().enumerate() {
-                    let label = if index == 0 {
-                        let current = self.runtime.current_microphone();
-                        if current.is_empty() {
-                            "Auto-detect".into()
-                        } else {
-                            format!("Auto-detect ({current})")
-                        }
-                    } else {
-                        mic.clone()
-                    };
-                    SendMessageW(
-                        combo,
-                        CB_ADDSTRING,
-                        None,
-                        Some(LPARAM(wide(&label).as_ptr() as isize)),
-                    );
-                }
-                let selected = self
-                    .microphones
-                    .iter()
-                    .position(|m| Some(m) == self.drafts.get("microphone_device"))
-                    .unwrap_or(0);
-                SendMessageW(combo, CB_SETCURSEL, Some(WPARAM(selected)), None);
-                self.button(401, "Refresh", [546, 102, 88, 30]);
-                self.label("Recording", [20, 155, 180, 22]);
-                for (id, text) in [(410, "Record"), (411, "Stop"), (412, "Cancel")] {
-                    self.button(id, text, [350 + (id as i32 - 410) * 96, 150, 88, 30]);
-                    let _ = EnableWindow(self.control(id), !self.smoke);
-                }
-                self.label("Recording limit (seconds)", [20, 220, 275, 22]);
-                self.edit(204, "recording_limit_seconds", [350, 216, 180, 28]);
-                self.button(304, "Save", [546, 215, 88, 30]);
-                self.label("Paste delay (milliseconds)", [20, 274, 275, 22]);
-                self.edit(205, "paste_delay_ms", [350, 270, 180, 28]);
-                self.button(305, "Save", [546, 269, 88, 30]);
-            }
-            2 => {
-                self.label("API base URL", [20, 62, 285, 22]);
-                self.edit(201, "api_base_url", [20, 88, 300, 28]);
-                self.label("API key", [342, 62, 290, 22]);
-                self.add(
-                    210,
-                    w!("EDIT"),
-                    "",
-                    WS_TABSTOP | WS_BORDER | WINDOW_STYLE((ES_AUTOHSCROLL | ES_PASSWORD) as u32),
-                    [342, 88, 292, 28],
-                );
-                SendMessageW(
-                    self.control(210),
-                    EM_SETCUEBANNER,
-                    Some(WPARAM(1)),
-                    Some(LPARAM(
-                        wide(
-                            &self
-                                .runtime
-                                .key_hint()
-                                .unwrap_or_else(|_| "Enter API key".into()),
-                        )
-                        .as_ptr() as isize,
-                    )),
-                );
-                self.button(301, "Save URL", [20, 124, 100, 28]);
-                self.button(310, "Save key", [342, 124, 100, 28]);
-                self.button(311, "Remove key", [452, 124, 110, 28]);
-                self.label("Transcription model", [20, 171, 280, 22]);
-                self.check(
-                    102,
-                    "Warm transcription model",
-                    self.drafts.get("transcription_warmup").map(String::as_str) == Some("true"),
-                    [395, 166, 240, 28],
-                );
-                self.render_transcription_model([20, 200, 614, 28]);
-                self.label(
-                    "Warm-up sends 1 second of silence; provider charges may apply.",
-                    [20, 235, 614, 22],
-                );
-                self.label("Cleanup model", [20, 275, 280, 22]);
-                self.check(
-                    103,
-                    "Text cleanup",
-                    self.drafts.get("cleanup_enabled").map(String::as_str) == Some("true"),
-                    [485, 270, 150, 28],
-                );
-                self.edit(203, "llm_model", [20, 304, 614, 28]);
-                let _ = EnableWindow(
-                    self.control(203),
-                    self.drafts.get("cleanup_enabled").map(String::as_str) == Some("true"),
-                );
-                self.button(320, "Save model", [510, 346, 124, 30]);
-                self.label(
-                    "When cleanup is off, paste the original transcript.",
-                    [20, 349, 475, 22],
-                );
-            }
-            4 => self.render_speech(),
-            5 => self.render_speech_shortcuts(),
-            _ => {
-                self.label("Languages (select all that apply)", [20, 63, 410, 22]);
-                self.button(10, "Done", [546, 60, 88, 28]);
-                let values: Vec<String> = serde_json::from_str(
-                    self.drafts
-                        .get("languages")
-                        .map(String::as_str)
-                        .unwrap_or("[]"),
-                )
-                .unwrap_or_default();
-                self.check(
-                    501,
-                    "Auto-detect",
-                    values.is_empty() || values.iter().any(|v| v == "auto"),
-                    [20, 96, 180, 28],
-                );
-                self.label("Search", [220, 99, 65, 22]);
-                self.add(
-                    502,
-                    w!("EDIT"),
-                    "",
-                    WS_TABSTOP | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
-                    [290, 96, 344, 28],
-                );
-                self.add(
-                    500,
-                    w!("LISTBOX"),
-                    "",
-                    WS_TABSTOP
-                        | WS_BORDER
-                        | WS_VSCROLL
-                        | WINDOW_STYLE(
-                            (LBS_MULTIPLESEL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32,
-                        ),
-                    [20, 139, 614, 245],
-                );
-                self.fill_languages("");
-            }
+            GENERAL => self.render_general(),
+            DICTATION => self.render_dictation(),
+            VOICE => self.render_speech(),
+            SHORTCUTS => self.render_shortcuts(),
+            CONNECTION => self.render_connection(),
+            _ => self.render_languages(),
         }
         self.add(
             STATUS,
             w!("STATIC"),
             &self.status.clone(),
             WINDOW_STYLE::default(),
-            [20, 400, 614, 36],
+            [20, HEIGHT - 40, 614, 34],
         );
         let _ = InvalidateRect(Some(self.window), None, true);
+    }
+    unsafe fn render_general(&mut self) {
+        self.setting_check(100, "Start Dictto when you sign in to Windows", [20, 66, 614, 24]);
+        self.setting_check(101, "Play a sound when recording starts and stops", [20, 98, 614, 24]);
+        self.label("Spoken languages", [20, 148, 210, 22]);
+        let languages = self.selected_languages();
+        let summary = if languages.is_empty() || languages.iter().any(|v| v == "auto") {
+            "Auto-detect".into()
+        } else {
+            languages
+                .iter()
+                .map(|code| {
+                    models::LANGUAGES
+                        .iter()
+                        .find(|(c, _)| c == code)
+                        .map_or(code.as_str(), |(_, name)| name)
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        self.label(&summary, [240, 148, 296, 22]);
+        self.button(CHOOSE_LANGUAGES, "Choose...", [546, 143, 88, 30]);
+        self.hint(
+            "Naming your languages helps the model; auto-detect guesses for each dictation.",
+            [240, 176, 394, 36],
+        );
+        self.label("Microphone", [20, 232, 210, 22]);
+        let current = self.runtime.current_microphone();
+        let mut options = vec![(
+            "auto-detect".to_string(),
+            if current.is_empty() { "Auto-detect".into() } else { format!("Auto-detect ({current})") },
+        )];
+        match self.runtime.microphones() {
+            Ok(items) => options.extend(items.into_iter().map(|m| (m.name.clone(), m.name))),
+            Err(e) => self.status = e,
+        }
+        self.bound_combo(MICROPHONE, "microphone_device", options, "(not connected)", [240, 228, 394, 250]);
+        self.hint("Auto-detect follows the Windows default input device.", [240, 260, 394, 22]);
+    }
+    unsafe fn render_dictation(&mut self) {
+        self.render_transcription_model(66);
+        self.setting_check(102, "Warm up the model so the first words come back faster", [240, 102, 394, 24]);
+        self.hint(
+            "Sends 1 second of silence at startup and when recording starts; provider charges may apply.",
+            [240, 128, 394, 36],
+        );
+        self.label("Text cleanup", [20, 180, 210, 22]);
+        self.setting_check(103, "Fix punctuation and remove filler words", [240, 177, 394, 24]);
+        self.render_cleanup_model(210);
+        let _ = EnableWindow(self.control(api::CLEANUP_MODEL), self.setting("cleanup_enabled") == "true");
+        self.hint("When cleanup is off, the raw transcript is pasted.", [240, 242, 394, 22]);
+        self.label("Maximum recording", [20, 290, 210, 22]);
+        let limits = LIMITS.iter().map(|(v, l)| (v.to_string(), l.to_string())).collect();
+        self.bound_combo(RECORDING_LIMIT, "recording_limit_seconds", limits, "seconds", [240, 286, 180, 200]);
+        self.label("Paste delay", [20, 330, 210, 22]);
+        let delays = DELAYS.iter().map(|(v, l)| (v.to_string(), l.to_string())).collect();
+        self.bound_combo(PASTE_DELAY, "paste_delay_ms", delays, "ms", [240, 326, 180, 200]);
+        self.hint("Raise it if the start of pasted text goes missing.", [240, 358, 394, 22]);
+    }
+    fn selected_languages(&self) -> Vec<String> {
+        serde_json::from_str(self.drafts.get("languages").map_or("[]", String::as_str))
+            .unwrap_or_default()
+    }
+    unsafe fn render_languages(&mut self) {
+        self.label("Spoken languages (select all that apply)", [20, 66, 410, 22]);
+        self.button(LANGUAGES_DONE, "Done", [546, 62, 88, 30]);
+        let values = self.selected_languages();
+        self.check(
+            501,
+            "Auto-detect",
+            values.is_empty() || values.iter().any(|v| v == "auto"),
+            [20, 100, 180, 28],
+        );
+        self.label("Search", [220, 103, 65, 22]);
+        self.edit(502, "", "Language name", [290, 100, 344, 28]);
+        self.add(
+            500,
+            w!("LISTBOX"),
+            "",
+            WS_TABSTOP
+                | WS_BORDER
+                | WS_VSCROLL
+                | WINDOW_STYLE((LBS_MULTIPLESEL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32),
+            [20, 140, 614, 280],
+        );
+        self.fill_languages("");
     }
     unsafe fn fill_languages(&mut self, filter: &str) {
         let list = self.control(500);
         SendMessageW(list, LB_RESETCONTENT, None, None);
         self.languages.clear();
-        let selected: Vec<String> = serde_json::from_str(
-            self.drafts
-                .get("languages")
-                .map(String::as_str)
-                .unwrap_or("[]"),
-        )
-        .unwrap_or_default();
+        let selected = self.selected_languages();
         for &(code, name) in models::LANGUAGES {
             if !name.to_lowercase().contains(&filter.to_lowercase())
                 && !code.contains(&filter.to_lowercase())
@@ -525,22 +541,12 @@ impl App {
         }
     }
     unsafe fn persist(&mut self, key: &str, value: &str) -> bool {
-        let result = if (key == "recording_limit_seconds"
-            && value.parse::<u64>().map(|v| v == 0).unwrap_or(true))
-            || (key == "paste_delay_ms" && value.parse::<u64>().is_err())
-        {
-            Err("Enter a valid whole number; recording limit must be positive.".into())
-        } else {
-            self.runtime.set_setting(key, value)
-        };
-        match result {
+        match self.runtime.set_setting(key, value) {
             Ok(()) => {
                 self.drafts.insert(key.into(), value.into());
                 if key == "api_base_url" {
-                    self.transcription.forget();
-                    self.speech_models.clear();
-                    self.catalog_generation += 1;
-                    self.catalog_loading = false;
+                    self.forget_catalogs();
+                    self.autoload();
                 }
                 self.status = "Saved".into();
                 true
@@ -551,36 +557,39 @@ impl App {
             }
         }
     }
+    /// Lists that belong to the previous endpoint or key.
+    fn forget_catalogs(&mut self) {
+        self.models.forget();
+        self.speech_models.clear();
+        self.catalog_generation += 1;
+        self.catalog_loading = false;
+    }
     unsafe fn command(&mut self, id: usize, notification: u32) {
-        if (id == 200 || (630..635).contains(&id)) && notification == EN_SETFOCUS {
-            self.runtime.set_hotkey_capture(true);
-            return;
-        }
-        if (id == 200 || (630..635).contains(&id)) && notification == EN_KILLFOCUS {
-            self.runtime.set_hotkey_capture(false);
-            return;
-        }
-        if self.api_command(id, notification) || self.speech_command(id, notification) {
-            self.label_text(STATUS, &self.status);
+        if self.api_command(id, notification)
+            || self.speech_command(id, notification)
+            || self.shortcut_command(id, notification)
+        {
+            if !self.window.0.is_null() {
+                self.label_text(STATUS, &self.status);
+            }
             return;
         }
         if id == 502 && notification == EN_CHANGE {
             self.fill_languages(&self.text(502));
             return;
         }
-        if id == 400 && notification == CBN_SELCHANGE {
-            let index = SendMessageW(self.control(400), CB_GETCURSEL, None, None).0 as usize;
-            if let Some(value) = self.microphones.get(index).cloned() {
-                self.persist("microphone_device", &value);
+        // LBN_SELCHANGE has the same value, so the list box must not be caught here.
+        if notification == CBN_SELCHANGE && self.bound.contains_key(&id) {
+            if let Some((key, values)) = self.bound.get(&id).cloned() {
+                let index = SendMessageW(self.control(id), CB_GETCURSEL, None, None).0 as usize;
+                if let Some(value) = values.get(index) {
+                    if !self.persist(&key, value) {
+                        self.render();
+                    }
+                }
             }
         } else if id == 500 && notification == LBN_SELCHANGE {
-            let mut values: Vec<String> = serde_json::from_str(
-                self.drafts
-                    .get("languages")
-                    .map(String::as_str)
-                    .unwrap_or("[]"),
-            )
-            .unwrap_or_default();
+            let mut values = self.selected_languages();
             values.retain(|v| v != "auto" && !self.languages.contains(v));
             for (index, code) in self.languages.iter().enumerate() {
                 if SendMessageW(self.control(500), LB_GETSEL, Some(WPARAM(index)), None).0 > 0 {
@@ -595,15 +604,24 @@ impl App {
                 None,
             );
         } else if notification == BN_CLICKED {
-            self.capture_drafts();
+            self.capture_engine_draft();
             match id {
-                10..=15 => {
-                    self.page = id - 10;
-                    if id == 14 && self.speech_models.is_empty() {
-                        self.refresh_speech_models();
-                    }
+                _ if (TAB..TAB + TABS.len()).contains(&id)
+                    || id == CHOOSE_LANGUAGES
+                    || id == LANGUAGES_DONE =>
+                {
+                    self.page = match id {
+                        CHOOSE_LANGUAGES => LANGUAGES,
+                        LANGUAGES_DONE => GENERAL,
+                        _ => id - TAB,
+                    };
                     self.render();
-                    let _ = SetFocus(Some(self.control(if id == 13 { 10 } else { id })));
+                    let focus = match id {
+                        LANGUAGES_DONE => CHOOSE_LANGUAGES,
+                        CHOOSE_LANGUAGES => 502,
+                        _ => id,
+                    };
+                    let _ = SetFocus(Some(self.control(focus)));
                 }
                 100..=103 => {
                     let key = CHECKS.iter().find(|(i, _)| *i == id).unwrap().1;
@@ -618,57 +636,11 @@ impl App {
                     }
                     if id == 103 {
                         let _ = EnableWindow(
-                            self.control(203),
-                            self.drafts.get(key).map(String::as_str) == Some("true"),
+                            self.control(api::CLEANUP_MODEL),
+                            self.setting(key) == "true",
                         );
                     }
                 }
-                300..=305 => {
-                    let field = id - 100;
-                    if let Some((_, key)) = FIELDS.iter().find(|(i, _)| *i == field) {
-                        self.persist(key, &self.text(field));
-                    }
-                }
-                310 => {
-                    let key = self.text(210);
-                    let result = if key.trim().is_empty() {
-                        Err("Enter an API key before saving".into())
-                    } else {
-                        self.runtime.save_key(key.trim())
-                    };
-                    self.status = match result {
-                        Ok(()) => {
-                            self.label_text(210, "");
-                            self.key_hint();
-                            "API key saved in Windows Credential Manager".into()
-                        }
-                        Err(e) => e,
-                    };
-                }
-                311 => {
-                    if MessageBoxW(
-                        Some(self.window),
-                        w!("Remove the saved API key?"),
-                        w!("Dictto"),
-                        MB_YESNO | MB_ICONQUESTION,
-                    ) == IDYES
-                    {
-                        self.status = match self.runtime.remove_key() {
-                            Ok(()) => {
-                                self.key_hint();
-                                "API key removed".into()
-                            }
-                            Err(e) => e,
-                        };
-                    }
-                }
-                320 => {
-                    self.persist("llm_model", &self.text(203));
-                }
-                401 => self.render(),
-                410 if !self.smoke => self.runtime.start_recording(),
-                411 if !self.smoke => self.runtime.stop_recording(),
-                412 if !self.smoke => self.runtime.cancel_recording(),
                 501 => {
                     let on = SendMessageW(self.control(501), BM_GETCHECK, None, None).0 != 0;
                     if on {
@@ -706,8 +678,8 @@ impl App {
                 self.receive_speech_models(payload);
                 continue;
             }
-            if name == events::TRANSCRIPTION_CATALOG {
-                self.receive_transcription_models(payload);
+            if name == events::MODEL_CATALOG {
+                self.receive_models(payload);
                 continue;
             }
             if name == events::AUDIO_DEVICES_CHANGED {
@@ -732,8 +704,7 @@ impl App {
                     .into();
             }
         }
-        if devices_changed && self.page == 1 && !self.window.0.is_null() {
-            self.capture_drafts();
+        if devices_changed && self.page == GENERAL && !self.window.0.is_null() {
             self.render();
         }
         if !self.window.0.is_null() {
@@ -768,11 +739,8 @@ unsafe extern "system" fn window_proc(
         }
         WM_NCDESTROY => {
             (*pointer).window = HWND::default();
-            (*pointer).catalog_generation += 1;
-            (*pointer).catalog_loading = false;
-            (*pointer).transcription.forget();
             (*pointer).children.clear();
-            (*pointer).drafts.clear();
+            (*pointer).bound.clear();
             let _ = DeleteObject((*pointer).font.into());
             (*pointer).font = HFONT::default();
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -787,8 +755,18 @@ unsafe extern "system" fn window_proc(
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN => {
             let dc = HDC(wparam.0 as _);
             let dark = (*pointer).dark;
-            let input = message == WM_CTLCOLOREDIT || message == WM_CTLCOLORLISTBOX;
-            SetTextColor(dc, COLORREF(if dark { 0xf0f0f0 } else { 0x202020 }));
+            let id = GetDlgCtrlID(HWND(lparam.0 as _)) as usize;
+            // Read-only shortcut fields report as static but should look like inputs.
+            let input = message == WM_CTLCOLOREDIT
+                || message == WM_CTLCOLORLISTBOX
+                || keys::is_field(id);
+            let text = match (id == HINT, dark) {
+                (true, true) => 0xa8a8a8,
+                (true, false) => 0x606060,
+                (false, true) => 0xf0f0f0,
+                (false, false) => 0x202020,
+            };
+            SetTextColor(dc, COLORREF(text));
             SetBkColor(
                 dc,
                 COLORREF(if dark {
@@ -816,7 +794,7 @@ unsafe extern "system" fn window_proc(
             DefWindowProcW(hwnd, message, wparam, lparam)
         }
         WM_DPICHANGED => {
-            (*pointer).capture_drafts();
+            (*pointer).capture_engine_draft();
             (*pointer).dpi = (wparam.0 & 0xffff) as u32;
             let rect = &*(lparam.0 as *const RECT);
             let _ = SetWindowPos(
@@ -952,7 +930,7 @@ pub fn run() -> Result<(), String> {
                 | events::RECORDING_STATE_CHANGED
                 | "processing-state"
                 | events::SPEECH_CATALOG
-                | events::TRANSCRIPTION_CATALOG
+                | events::MODEL_CATALOG
                 | events::AUDIO_DEVICES_CHANGED
         ) {
             let _ = tx.send((name.into(), payload));
@@ -1017,34 +995,11 @@ unsafe fn run_windows(
             return Err(windows::core::Error::from_thread().to_string());
         }
     }
-    let mut app = Box::new(App {
-        runtime,
-        events,
-        host: HWND::default(),
-        window: HWND::default(),
-        children: Vec::new(),
-        drafts: HashMap::new(),
-        page: 0,
-        font: HFONT::default(),
-        background: HBRUSH::default(),
-        input_background: HBRUSH::default(),
-        dark: false,
-        dpi: 96,
-        icon,
-        taskbar_message: RegisterWindowMessageW(w!("TaskbarCreated")),
-        speech_models: Vec::new(),
-        catalog_generation: 0,
-        catalog_loading: false,
-        transcription: Default::default(),
-        microphones: Vec::new(),
-        languages: Vec::new(),
-        smoke,
-        status: if smoke {
-            "Preview: recording services disabled".into()
-        } else {
-            String::new()
-        },
-    });
+    let mut app = Box::new(App::new(runtime, events, icon, smoke));
+    app.taskbar_message = RegisterWindowMessageW(w!("TaskbarCreated"));
+    if smoke {
+        app.status = "Preview: recording services disabled".into();
+    }
     app.theme();
     app.host = CreateWindowExW(
         WS_EX_TOOLWINDOW,
@@ -1089,6 +1044,9 @@ unsafe fn run_windows(
             }
             if result == 0 {
                 break;
+            }
+            if !app.window.0.is_null() && app.shortcut_key(&message) {
+                continue;
             }
             if app.window.0.is_null() || !IsDialogMessageW(app.window, &message).as_bool() {
                 let _ = TranslateMessage(&message);
@@ -1136,30 +1094,7 @@ mod tests {
                     lpszClassName: w!("Dictto.Win32.Host"),
                     ..Default::default()
                 });
-                let mut app = Box::new(App {
-                    runtime,
-                    events,
-                    host: HWND::default(),
-                    window: HWND::default(),
-                    children: Vec::new(),
-                    drafts: HashMap::new(),
-                    page: 0,
-                    font: HFONT::default(),
-                    background: HBRUSH::default(),
-                    input_background: HBRUSH::default(),
-                    dark: false,
-                    dpi: 96,
-                    icon: HICON::default(),
-                    taskbar_message: 0,
-                    speech_models: Vec::new(),
-        catalog_generation: 0,
-        catalog_loading: false,
-        transcription: Default::default(),
-        microphones: Vec::new(),
-                    languages: Vec::new(),
-                    smoke: true,
-                    status: String::new(),
-                });
+                let mut app = Box::new(App::new(runtime, events, HICON::default(), true));
                 app.host = CreateWindowExW(
                     WS_EX_TOOLWINDOW,
                     w!("Dictto.Win32.Host"),
@@ -1177,160 +1112,165 @@ mod tests {
                 .unwrap();
                 app.show().unwrap();
                 assert!(IsWindow(Some(app.window)).as_bool());
-                app.command(12, BN_CLICKED);
-                assert_eq!(app.text(210), "");
-                app.label_text(201, "http://localhost:1234/v1");
-                app.command(301, BN_CLICKED);
-                assert_eq!(
-                    app.runtime.get_settings().unwrap()["api_base_url"],
-                    "http://localhost:1234/v1"
-                );
-                // Until a refresh the saved model is the only choice.
-                assert_eq!(SendMessageW(app.control(202), CB_GETCOUNT, None, None).0, 1);
-                assert_eq!(app.text(202), "gpt-4o-mini-transcribe");
-                let transcription = |app: &mut App, payload: Value| {
+                let pick = |app: &mut App, id: usize, index: usize| {
+                    SendMessageW(app.control(id), CB_SETCURSEL, Some(WPARAM(index)), None);
+                    app.command(id, CBN_SELCHANGE);
+                };
+                let setting = |app: &App, key: &str| app.runtime.get_settings().unwrap()[key].clone();
+
+                // Connection: a typed endpoint saves when focus leaves.
+                app.command(TAB + CONNECTION, BN_CLICKED);
+                assert_eq!(app.text(api::KEY), "");
+                app.label_text(api::ENDPOINT, "http://localhost:1234/v1");
+                app.command(api::ENDPOINT, CBN_KILLFOCUS);
+                assert_eq!(setting(&app, "api_base_url"), "http://localhost:1234/v1");
+
+                // Dictation: until models arrive the saved one is the only choice.
+                app.command(TAB + DICTATION, BN_CLICKED);
+                assert_eq!(SendMessageW(app.control(api::TRANSCRIPTION_MODEL), CB_GETCOUNT, None, None).0, 1);
+                assert_eq!(app.text(api::TRANSCRIPTION_MODEL), "gpt-4o-mini-transcribe");
+                let catalog = |app: &mut App, payload: Value| {
                     let mut payload = payload;
-                    payload["generation"] = app.transcription_generation().into();
-                    events_tx.send((events::TRANSCRIPTION_CATALOG.into(), payload)).unwrap();
+                    payload["generation"] = app.models_generation().into();
+                    events_tx.send((events::MODEL_CATALOG.into(), payload)).unwrap();
                     SendMessageW(app.host, EVENTS, None, None);
                 };
-                app.command(206, BN_CLICKED);
-                assert!(!IsWindowEnabled(app.control(206)).as_bool());
-                transcription(&mut app, serde_json::json!({"models": ["canary-1b-v2", "whisper-1"]}));
-                assert!(IsWindowEnabled(app.control(206)).as_bool());
-                assert_eq!(SendMessageW(app.control(202), CB_GETCOUNT, None, None).0, 3);
-                assert_eq!(app.text(202), "gpt-4o-mini-transcribe (not advertised)");
-                SendMessageW(app.control(202), CB_SETCURSEL, Some(WPARAM(2)), None);
-                app.command(202, CBN_SELCHANGE);
-                assert_eq!(app.runtime.get_settings().unwrap()["transcription_model"], "whisper-1");
-                app.command(10, BN_CLICKED);
-                app.command(12, BN_CLICKED);
-                assert_eq!(SendMessageW(app.control(202), CB_GETCOUNT, None, None).0, 2);
-                assert_eq!(app.text(202), "whisper-1");
-                app.command(206, BN_CLICKED);
-                transcription(&mut app, serde_json::json!({"error": "unauthorized"}));
+                app.command(api::REFRESH, BN_CLICKED);
+                assert!(!IsWindowEnabled(app.control(api::REFRESH)).as_bool());
+                catalog(&mut app, serde_json::json!({
+                    "transcription": ["canary-1b-v2", "whisper-1"], "chat": ["gpt-4.1-nano", "text-light"]
+                }));
+                assert_eq!(SendMessageW(app.control(api::TRANSCRIPTION_MODEL), CB_GETCOUNT, None, None).0, 3);
+                assert_eq!(app.text(api::TRANSCRIPTION_MODEL), "gpt-4o-mini-transcribe (not advertised)");
+                pick(&mut app, api::TRANSCRIPTION_MODEL, 2);
+                assert_eq!(setting(&app, "transcription_model"), "whisper-1");
+                assert_eq!(SendMessageW(app.control(api::CLEANUP_MODEL), CB_GETCOUNT, None, None).0, 2);
+                pick(&mut app, api::CLEANUP_MODEL, 1);
+                assert_eq!(setting(&app, "llm_model"), "text-light");
+                // The lists stay across tabs without asking again.
+                app.command(TAB + GENERAL, BN_CLICKED);
+                app.command(TAB + DICTATION, BN_CLICKED);
+                assert_eq!(SendMessageW(app.control(api::TRANSCRIPTION_MODEL), CB_GETCOUNT, None, None).0, 2);
+                assert_eq!(app.text(api::TRANSCRIPTION_MODEL), "whisper-1");
+                app.command(api::REFRESH, BN_CLICKED);
+                catalog(&mut app, serde_json::json!({"error": "unauthorized"}));
                 assert!(app.status.contains("unauthorized"));
-                assert_eq!(app.text(202), "whisper-1");
-                let catalog = serde_json::json!([
+                assert_eq!(app.text(api::TRANSCRIPTION_MODEL), "whisper-1");
+                // Presets replace typed numbers.
+                assert_eq!(app.text(RECORDING_LIMIT), "5 minutes");
+                pick(&mut app, RECORDING_LIMIT, 1);
+                assert_eq!(setting(&app, "recording_limit_seconds"), "120");
+                pick(&mut app, PASTE_DELAY, 4);
+                assert_eq!(setting(&app, "paste_delay_ms"), "500");
+                app.runtime.set_setting("paste_delay_ms", "75").unwrap();
+                app.drafts.insert("paste_delay_ms".into(), "75".into());
+                app.render();
+                assert_eq!(app.text(PASTE_DELAY), "75 ms");
+                // Cleanup off disables its model.
+                SendMessageW(app.control(103), BM_SETCHECK, Some(WPARAM(0)), None);
+                app.command(103, BN_CLICKED);
+                assert!(!IsWindowEnabled(app.control(api::CLEANUP_MODEL)).as_bool());
+
+                // Voice.
+                let speech = serde_json::json!([
                     {"id":"qwen3-tts","name":"Qwen","capabilities":{
                         "modes":{"speaker":["worker"]},"voice_fields":{"speaker":["voice","voice_instruction"]},
-                        "voices":[{"id":18,"name":"Test speaker"}],"engine_options":{"temperature":"number"}
+                        "voices":[{"id":18,"name":"Test speaker"}],
+                        "engine_options":{"temperature":"number","num_step":"integer","stream":"boolean"}
                     }},
                     {"id":"omnivoice","name":"Omni","capabilities":{
-                        "modes":{"auto":["worker"]},"voice_fields":{"auto":[]},"engine_options":{"num_step":"integer"}
+                        "modes":{"auto":["worker"]},"voice_fields":{"auto":[]},"engine_options":{}
                     }}
                 ]);
-                app.page = 4;
+                app.page = VOICE;
                 app.catalog_loading = true;
                 app.render();
                 assert!(!IsWindowEnabled(app.control(610)).as_bool());
-                assert!(IsWindow(Some(app.control(624))).as_bool());
                 assert_eq!(app.text(624), "Open audio folder");
-                assert_eq!(app.runtime.get_settings().unwrap()["tts_virtual_mic"], "false");
+                assert_eq!(setting(&app, "tts_virtual_mic"), "false");
                 SendMessageW(app.control(625), BM_SETCHECK, Some(WPARAM(1)), None);
                 app.command(625, BN_CLICKED);
-                assert_eq!(app.runtime.get_settings().unwrap()["tts_virtual_mic"], "true");
-                SendMessageW(app.control(625), BM_SETCHECK, Some(WPARAM(0)), None);
-                app.command(625, BN_CLICKED);
-                assert_eq!(app.runtime.get_settings().unwrap()["tts_virtual_mic"], "false");
+                assert_eq!(setting(&app, "tts_virtual_mic"), "true");
                 let discovery = |app: &mut App, models: Value| {
                     events_tx.send((events::SPEECH_CATALOG.into(), serde_json::json!({
                         "generation": app.catalog_generation, "models": models
                     }))).unwrap();
                     SendMessageW(app.host, EVENTS, None, None);
                 };
-                discovery(&mut app, catalog.clone());
+                discovery(&mut app, speech.clone());
                 assert!(!app.catalog_loading);
                 assert!(IsWindowEnabled(app.control(610)).as_bool());
                 assert_eq!(SendMessageW(app.control(610), CB_GETCOUNT, None, None).0, 3);
                 assert_eq!(SendMessageW(app.control(610), CB_GETCURSEL, None, None).0, 1);
-                assert_eq!(app.runtime.get_settings().unwrap()["tts_model"], "qwen3-tts");
-                assert_eq!(app.runtime.get_settings().unwrap()["tts_voice:qwen3-tts"], "18");
-                SendMessageW(app.control(611), CB_SETCURSEL, Some(WPARAM(0)), None);
-                app.command(611, CBN_SELCHANGE);
-                discovery(&mut app, catalog.clone());
-                assert_eq!(app.runtime.get_settings().unwrap()["tts_voice:qwen3-tts"], "");
+                assert_eq!(setting(&app, "tts_model"), "qwen3-tts");
+                assert_eq!(setting(&app, "tts_voice:qwen3-tts"), "18");
+                pick(&mut app, 611, 0);
+                assert_eq!(setting(&app, "tts_voice:qwen3-tts"), "");
                 discovery(&mut app, serde_json::json!([]));
                 assert!(app.status.contains("no speech models"));
                 assert!(!IsWindowEnabled(app.control(610)).as_bool());
-                events_tx.send((events::SPEECH_CATALOG.into(), serde_json::json!({
-                    "generation": app.catalog_generation, "error": "unauthorized"
-                }))).unwrap();
-                SendMessageW(app.host, EVENTS, None, None);
-                assert!(app.status.contains("unauthorized"));
-                discovery(&mut app, catalog);
-                SendMessageW(app.control(610), CB_SETCURSEL, Some(WPARAM(1)), None);
-                app.command(610, CBN_SELCHANGE);
-                SendMessageW(app.control(611), CB_SETCURSEL, Some(WPARAM(1)), None);
-                app.command(611, CBN_SELCHANGE);
-                assert_eq!(app.runtime.get_settings().unwrap()["tts_voice:qwen3-tts"], "18");
+                discovery(&mut app, speech);
+                pick(&mut app, 611, 1);
+                assert_eq!(setting(&app, "tts_voice:qwen3-tts"), "18");
                 app.label_text(620, "Softly");
-                app.command(621, BN_CLICKED);
-                app.label_text(622, r#"{"temperature":"bad"}"#);
-                app.command(623, BN_CLICKED);
-                assert_eq!(app.runtime.get_settings().unwrap()["tts_engine_options"], "{}");
-                app.label_text(622, r#"{"temperature":0.8}"#);
-                app.command(623, BN_CLICKED);
-                assert_eq!(app.runtime.get_settings().unwrap()["tts_engine_options"], r#"{"qwen3-tts":{"temperature":0.8}}"#);
-                SendMessageW(app.control(610), CB_SETCURSEL, Some(WPARAM(2)), None);
-                app.command(610, CBN_SELCHANGE);
+                app.command(620, EN_KILLFOCUS);
+                assert_eq!(setting(&app, "tts_voice_instruction:qwen3-tts"), "Softly");
+                // Engine options are typed controls, sorted by name: num_step, stream, temperature.
+                assert_eq!(app.engine_fields.len(), 3);
+                app.label_text(650, "1.5");
+                app.command(650, EN_KILLFOCUS);
+                assert!(app.status.contains("num_step must be integer"));
+                assert_eq!(setting(&app, "tts_engine_options"), "{}");
+                app.label_text(650, "8");
+                app.label_text(652, "0.8");
+                app.command(652, EN_KILLFOCUS);
+                pick(&mut app, 651, 2);
+                assert_eq!(
+                    setting(&app, "tts_engine_options"),
+                    r#"{"qwen3-tts":{"num_step":8,"stream":false,"temperature":0.8}}"#
+                );
+                pick(&mut app, 610, 2);
                 assert!(!IsWindowEnabled(app.control(611)).as_bool());
                 assert!(!IsWindowEnabled(app.control(620)).as_bool());
-                assert_eq!(app.text(622), "{}");
-                assert_eq!(app.text(620), "");
-                SendMessageW(app.control(610), CB_SETCURSEL, Some(WPARAM(1)), None);
-                app.command(610, CBN_SELCHANGE);
+                assert!(app.engine_fields.is_empty());
+                pick(&mut app, 610, 1);
                 assert_eq!(app.text(620), "Softly");
-                assert_eq!(SendMessageW(app.control(611), CB_GETCURSEL, None, None).0, 1);
-                app.command(15, BN_CLICKED);
-                app.label_text(630, "Ctrl+Alt+F8");
+                assert_eq!(app.text(652), "0.8");
+
+                // Shortcuts: Reset restores the dictation default, Clear disables a voice one.
+                app.command(TAB + SHORTCUTS, BN_CLICKED);
+                app.runtime.set_setting("hotkey", "Ctrl+Alt+F9").unwrap();
                 app.command(640, BN_CLICKED);
-                assert_eq!(app.runtime.get_settings().unwrap()["tts_hotkey_sample_mic"], "Ctrl+Alt+F8");
-                app.command(13, BN_CLICKED);
+                assert_eq!(setting(&app, "hotkey"), "Ctrl+Win");
+                assert_eq!(app.text(630), "Ctrl+Win");
+                app.persist("tts_hotkey_sample_mic", "Ctrl+Alt+F8");
+                app.command(641, BN_CLICKED);
+                assert_eq!(setting(&app, "tts_hotkey_sample_mic"), "");
+
+                // Languages.
+                app.command(CHOOSE_LANGUAGES, BN_CLICKED);
                 app.fill_languages("French");
                 assert_eq!(app.languages, ["fr"]);
-                assert_eq!(
-                    SendMessageW(app.control(500), LB_GETSEL, Some(WPARAM(0)), None).0,
-                    1
-                );
-                SendMessageW(
-                    app.control(500),
-                    LB_SETSEL,
-                    Some(WPARAM(0)),
-                    Some(LPARAM(0)),
-                );
+                assert_eq!(SendMessageW(app.control(500), LB_GETSEL, Some(WPARAM(0)), None).0, 1);
+                SendMessageW(app.control(500), LB_SETSEL, Some(WPARAM(0)), Some(LPARAM(0)));
                 app.command(500, LBN_SELCHANGE);
-                assert_eq!(
-                    app.runtime.get_settings().unwrap()["languages"],
-                    r#"["en"]"#
-                );
-                app.command(11, BN_CLICKED);
-                app.label_text(204, "0");
-                app.command(304, BN_CLICKED);
-                assert_ne!(
-                    app.runtime.get_settings().unwrap()["recording_limit_seconds"],
-                    "0"
-                );
-                assert!(app.status.contains("positive"));
+                assert_eq!(setting(&app, "languages"), r#"["en"]"#);
+                app.command(LANGUAGES_DONE, BN_CLICKED);
+                assert_eq!(app.page, GENERAL);
+
                 let old = app.window;
                 SendMessageW(old, WM_CLOSE, None, None);
                 assert!(!IsWindow(Some(old)).as_bool());
                 assert!(app.window.0.is_null());
                 assert!(app.children.is_empty());
                 assert!(app.font.0.is_null());
-                SendMessageW(
-                    app.host,
-                    TRAY,
-                    Some(WPARAM(0)),
-                    Some(LPARAM(WM_LBUTTONUP as isize)),
-                );
+                // Model lists outlive the window.
+                assert_eq!(app.speech_models.len(), 2);
+                SendMessageW(app.host, TRAY, Some(WPARAM(0)), Some(LPARAM(WM_LBUTTONUP as isize)));
                 let mut message = MSG::default();
-                assert!(
-                    PeekMessageW(&mut message, Some(app.host), OPEN, OPEN, PM_REMOVE).as_bool()
-                );
+                assert!(PeekMessageW(&mut message, Some(app.host), OPEN, OPEN, PM_REMOVE).as_bool());
                 DispatchMessageW(&message);
                 assert!(!app.window.0.is_null());
-                assert_eq!(app.text(200), app.runtime.get_settings().unwrap()["hotkey"]);
                 SendMessageW(app.window, WM_CLOSE, None, None);
                 SetWindowLongPtrW(app.host, GWLP_USERDATA, 0);
                 let _ = DestroyWindow(app.host);

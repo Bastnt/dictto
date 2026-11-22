@@ -1,39 +1,16 @@
 use super::*;
 
-pub(super) const SHORTCUTS: &[(&str, &str)] = &[
-    ("tts_hotkey_sample_mic", "Record voice sample (microphone)"),
-    (
-        "tts_hotkey_sample_loopback",
-        "Record voice sample (Windows playback)",
-    ),
-    (
-        "tts_hotkey_speech_to_speech",
-        "Repeat my speech in the cloned voice",
-    ),
-    ("tts_hotkey_read_clone", "Read text in the cloned voice"),
-    ("tts_hotkey_read_voice", "Read text in the engine voice"),
-];
+const MODEL: usize = 610;
+const VOICE_LIST: usize = 611;
+const REFRESH: usize = 614;
+const INSTRUCTION: usize = 620;
+const AUDIO_FOLDER: usize = 624;
+const VIRTUAL_MIC: usize = 625;
+// One control per engine option, two per row.
+const OPTION: usize = 650;
+const MAX_OPTIONS: usize = 8;
 
 impl App {
-    pub(super) unsafe fn combo(&mut self, id: usize, labels: &[String], selected: usize, rect: [i32; 4]) {
-        let hwnd = self.add(
-            id,
-            w!("COMBOBOX"),
-            "",
-            WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
-            rect,
-        );
-        for label in labels {
-            SendMessageW(
-                hwnd,
-                CB_ADDSTRING,
-                None,
-                Some(LPARAM(wide(label).as_ptr() as isize)),
-            );
-        }
-        SendMessageW(hwnd, CB_SETCURSEL, Some(WPARAM(selected)), None);
-    }
-
     fn selected_speech_model(&self) -> Option<&SpeechModel> {
         self.speech_models
             .iter()
@@ -43,7 +20,6 @@ impl App {
     pub(super) fn refresh_speech_models(&mut self) {
         self.catalog_generation += 1;
         self.catalog_loading = true;
-        self.status = "Loading speech models from the configured API…".into();
         self.runtime.discover_speech_models(self.catalog_generation);
     }
 
@@ -52,35 +28,35 @@ impl App {
             return;
         }
         self.catalog_loading = false;
-        self.capture_drafts();
+        self.capture_engine_draft();
         self.speech_models.clear();
-        self.status = if let Some(error) = payload["error"].as_str() {
-            format!("Speech discovery: {error}")
+        let message = if let Some(error) = payload["error"].as_str() {
+            Some(format!("Speech models: {error}"))
         } else {
             match serde_json::from_value(payload["models"].clone()) {
                 Ok(models) => {
                     self.speech_models = models;
                     if self.speech_models.is_empty() {
-                        "This API advertises no speech models.".into()
+                        Some("This API advertises no speech models.".into())
                     } else {
                         self.choose_initial_speech_model()
                     }
                 }
-                Err(e) => format!("Invalid speech catalog: {e}"),
+                Err(e) => Some(format!("Invalid speech catalog: {e}")),
             }
         };
-        if self.page == 4 && !self.window.0.is_null() {
+        // Loading happens in the background on every open; only news is worth a status.
+        if let Some(message) = message {
+            self.status = message;
+        }
+        if self.page == VOICE && !self.window.0.is_null() {
             self.render();
         }
     }
 
-    unsafe fn choose_initial_speech_model(&mut self) -> String {
-        if self
-            .drafts
-            .get("tts_model")
-            .is_some_and(|id| !id.is_empty())
-        {
-            return "Speech models loaded.".into();
+    unsafe fn choose_initial_speech_model(&mut self) -> Option<String> {
+        if self.drafts.get("tts_model").is_some_and(|id| !id.is_empty()) {
+            return None;
         }
         let model = dictto_native::speech_api::default_speech_model(&self.speech_models)
             .expect("nonempty catalog");
@@ -91,69 +67,45 @@ impl App {
         if !self.drafts.contains_key(&voice_key) && !self.drafts.contains_key(&instruction_key) {
             if let Some(speaker) = speaker {
                 if !self.persist(&voice_key, &speaker.to_string()) {
-                    return self.status.clone();
+                    return Some(self.status.clone());
                 }
             }
         }
         if !self.persist("tts_model", &model_id) {
-            return self.status.clone();
+            return Some(self.status.clone());
         }
-        format!("Selected {model_id}.")
-    }
-
-    pub(super) unsafe fn render_speech_shortcuts(&mut self) {
-        self.label("Speech shortcuts", [20, 62, 614, 22]);
-        self.label(
-            "Enter a chord such as Ctrl+Alt+F8. Clear the field to disable it.",
-            [20, 87, 614, 25],
-        );
-        for (i, (key, label)) in SHORTCUTS.iter().enumerate() {
-            let y = 129 + 48 * i as i32;
-            self.label(label, [20, y + 4, 315, 23]);
-            self.edit(630 + i, key, [340, y, 197, 28]);
-            self.button(640 + i, "Save", [550, y, 84, 28]);
-        }
-        self.label("Read text uses the selection in the focused app, then the clipboard if nothing is selected.", [20, 365, 614, 28]);
+        Some(format!("Selected speech model {model_id}."))
     }
 
     pub(super) unsafe fn render_speech(&mut self) {
         let model = self.selected_speech_model().cloned();
-        self.label("Speech model", [20, 60, 140, 22]);
-        let mut labels = vec![
-            match self.drafts.get("tts_model").filter(|s| !s.is_empty()) {
-                Some(id) if model.is_none() => format!("{id} (not discovered)"),
-                _ if self.catalog_loading => "Loading models…".into(),
-                _ if self.speech_models.is_empty() => "No models available".into(),
-                _ => "Choose a model".into(),
-            },
-        ];
-        labels.extend(
-            self.speech_models
-                .iter()
-                .map(|m| format!("{} ({})", m.name, m.id)),
-        );
+        self.label("Speech model", [20, 70, 210, 22]);
+        let mut labels = vec![match self.drafts.get("tts_model").filter(|s| !s.is_empty()) {
+            Some(id) if model.is_none() && !self.catalog_loading => format!("{id} (not advertised)"),
+            _ if self.catalog_loading => "Loading models...".into(),
+            _ if self.speech_models.is_empty() => "No models available".into(),
+            _ => "Choose a model".into(),
+        }];
+        labels.extend(self.speech_models.iter().map(|m| format!("{} ({})", m.name, m.id)));
         let index = self
             .speech_models
             .iter()
             .position(|m| Some(&m.id) == self.drafts.get("tts_model"))
             .map_or(0, |i| i + 1);
-        self.combo(610, &labels, index, [168, 56, 357, 200]);
+        self.combo(MODEL, &labels, index, [240, 66, 290, 200]);
         let _ = EnableWindow(
-            self.control(610),
+            self.control(MODEL),
             !self.speech_models.is_empty() && !self.catalog_loading,
         );
-        self.button(614, "Refresh", [536, 55, 98, 30]);
-        let _ = EnableWindow(self.control(614), !self.catalog_loading);
+        let loading = self.catalog_loading;
+        self.button(REFRESH, if loading { "Loading..." } else { "Refresh" }, [540, 65, 94, 30]);
+        let _ = EnableWindow(self.control(REFRESH), !loading && self.runtime.has_key());
         let fields = |field: &str| {
             model.as_ref().is_some_and(|m| {
-                m.capabilities
-                    .voice_fields
-                    .values()
-                    .flatten()
-                    .any(|f| f == field)
+                m.capabilities.voice_fields.values().flatten().any(|f| f == field)
             })
         };
-        let mut voices = vec!["No numbered speaker".to_string()];
+        let mut voices = vec!["Engine default".to_string()];
         let mut selected = 0;
         if let Some(m) = &model {
             let saved = self
@@ -164,90 +116,170 @@ impl App {
                 if saved == Some(v.id) {
                     selected = voices.len();
                 }
-                voices.push(format!("{} · {}", v.id, v.name));
+                voices.push(format!("{} ({})", v.name, v.id));
             }
         }
-        self.label("Engine voice", [20, 103, 140, 22]);
-        self.combo(611, &voices, selected, [168, 99, 466, 200]);
-        let _ = EnableWindow(self.control(611), fields("voice") && voices.len() > 1);
-        self.label("Voice instruction", [20, 145, 140, 22]);
-        let instruction_key = format!(
-            "tts_voice_instruction:{}",
-            model.as_ref().map_or("", |m| m.id.as_str())
-        );
-        self.edit(620, &instruction_key, [168, 141, 357, 28]);
-        self.button(621, "Save", [536, 140, 98, 30]);
-        let instruction = fields("voice_instruction");
-        let _ = EnableWindow(self.control(620), instruction);
-        let _ = EnableWindow(self.control(621), instruction);
-        let modes = model
+        self.label("Voice", [20, 108, 210, 22]);
+        self.combo(VOICE_LIST, &voices, selected, [240, 104, 394, 200]);
+        let _ = EnableWindow(self.control(VOICE_LIST), fields("voice") && voices.len() > 1);
+        self.label("Voice instruction", [20, 146, 210, 22]);
+        let instruction = model
             .as_ref()
-            .map(|m| {
-                m.capabilities
-                    .modes
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
+            .map(|m| self.setting(&format!("tts_voice_instruction:{}", m.id)).to_string())
             .unwrap_or_default();
-        self.label(&format!("Available modes: {modes}"), [20, 183, 614, 22]);
-        self.label(
-            "Clone actions use your last recorded voice sample.",
-            [20, 213, 438, 26],
+        self.edit(
+            INSTRUCTION,
+            &instruction,
+            "Optional, for example: calm, slow, warm",
+            [240, 142, 394, 28],
         );
-        self.button(624, "Open audio folder", [478, 205, 156, 30]);
-        self.label("Advanced engine options (JSON object)", [20, 253, 600, 22]);
-        let key = format!(
-            "engine_draft:{}",
-            model.as_ref().map_or("", |m| m.id.as_str())
+        let _ = EnableWindow(self.control(INSTRUCTION), fields("voice_instruction"));
+        let y = self.render_engine_options(model.as_ref()) + 16;
+        let mic_enabled = self.setting("tts_virtual_mic") == "true";
+        self.check(VIRTUAL_MIC, "Send speech to VB-CABLE", mic_enabled, [20, y + 4, 440, 24]);
+        self.button(AUDIO_FOLDER, "Open audio folder", [478, y, 156, 30]);
+        self.hint(
+            "Switches the Windows communications microphone to VB-CABLE while speaking, so calls hear the voice.",
+            [20, y + 32, 614, 36],
         );
-        if let Some(m) = &model {
-            let all = self
-                .drafts
-                .get("tts_engine_options")
-                .and_then(|s| serde_json::from_str::<Value>(s).ok());
-            self.drafts.entry(key.clone()).or_insert_with(|| {
-                all.as_ref()
-                    .and_then(|v| v.get(&m.id))
-                    .map(Value::to_string)
-                    .unwrap_or_else(|| "{}".into())
-            });
-        }
-        self.edit(622, &key, [20, 281, 505, 28]);
-        self.button(623, "Save", [536, 280, 98, 30]);
-        let schema = model.as_ref().map(|m| &m.capabilities.engine_options);
-        let enabled = schema.is_some_and(|s| !s.is_empty());
-        let _ = EnableWindow(self.control(622), enabled);
-        let _ = EnableWindow(self.control(623), enabled);
-        let hint = schema
-            .into_iter()
-            .flatten()
-            .map(|(k, v)| format!("{k} ({v})"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        self.label(&hint, [20, 313, 614, 31]);
-        let mic_enabled = self.drafts.get("tts_virtual_mic").is_some_and(|v| v == "true");
-        self.check(625, "Send speech to VB-CABLE", mic_enabled, [20, 348, 614, 24]);
-        self.label("Temporarily switches the Windows communications microphone during speech.", [20, 376, 614, 21]);
     }
 
-    pub(super) unsafe fn capture_engine_draft(&mut self) {
-        if !self.control(622).0.is_null() {
-            if let Some(model) = self.selected_speech_model().map(|m| m.id.clone()) {
-                self.drafts
-                    .insert(format!("tts_voice_instruction:{model}"), self.text(620));
-                self.drafts
-                    .insert(format!("engine_draft:{model}"), self.text(622));
+    /// Returns the y just below the options.
+    unsafe fn render_engine_options(&mut self, model: Option<&SpeechModel>) -> i32 {
+        self.label("Engine options", [20, 192, 210, 22]);
+        self.engine_fields = model
+            .map(|m| {
+                m.capabilities
+                    .engine_options
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if self.engine_fields.is_empty() {
+            self.hint("This model has no options.", [240, 192, 394, 22]);
+            return 214;
+        }
+        let model_id = model.map_or("", |m| m.id.as_str()).to_string();
+        let saved = self.saved_engine_options(&model_id);
+        let fields: Vec<_> = self.engine_fields.iter().take(MAX_OPTIONS).cloned().collect();
+        for (i, (name, kind)) in fields.into_iter().enumerate() {
+            let x = 240 + (i % 2) as i32 * 200;
+            let y = 188 + (i / 2) as i32 * 36;
+            self.label(&name, [x, y + 4, 100, 22]);
+            let value = self
+                .drafts
+                .get(&format!("engine_draft:{model_id}:{name}"))
+                .cloned()
+                .or_else(|| {
+                    saved
+                        .get(&name)
+                        .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
+                })
+                .unwrap_or_default();
+            if kind == "boolean" {
+                let index = match value.as_str() {
+                    "true" => 1,
+                    "false" => 2,
+                    _ => 0,
+                };
+                let labels = ["Default".to_string(), "On".into(), "Off".into()];
+                self.combo(OPTION + i, &labels, index, [x + 100, y, 90, 120]);
+            } else {
+                self.edit(OPTION + i, &value, "Default", [x + 100, y, 90, 28]);
             }
+        }
+        let bottom = 188 + self.engine_fields.len().min(MAX_OPTIONS).div_ceil(2) as i32 * 36;
+        let hidden = self.engine_fields.len().saturating_sub(MAX_OPTIONS);
+        if hidden > 0 {
+            self.hint(&format!("{hidden} more options are not shown."), [240, bottom, 394, 22]);
+            return bottom + 22;
+        }
+        bottom
+    }
+
+    fn saved_engine_options(&self, model: &str) -> serde_json::Map<String, Value> {
+        serde_json::from_str::<Value>(self.setting("tts_engine_options"))
+            .ok()
+            .and_then(|all| all.get(model).and_then(Value::as_object).cloned())
+            .unwrap_or_default()
+    }
+
+    unsafe fn option_text(&self, index: usize, kind: &str) -> String {
+        if kind == "boolean" {
+            match SendMessageW(self.control(OPTION + index), CB_GETCURSEL, None, None).0 {
+                1 => "true".into(),
+                2 => "false".into(),
+                _ => String::new(),
+            }
+        } else {
+            self.text(OPTION + index).trim().to_string()
+        }
+    }
+
+    /// Keeps typed text that a re-render would otherwise drop.
+    pub(super) unsafe fn capture_engine_draft(&mut self) {
+        if self.control(INSTRUCTION).0.is_null() {
+            return;
+        }
+        let Some(model) = self.selected_speech_model().map(|m| m.id.clone()) else {
+            return;
+        };
+        self.drafts
+            .insert(format!("tts_voice_instruction:{model}"), self.text(INSTRUCTION));
+        let fields: Vec<_> = self.engine_fields.iter().take(MAX_OPTIONS).cloned().collect();
+        for (i, (name, kind)) in fields.iter().enumerate() {
+            if !self.control(OPTION + i).0.is_null() {
+                let value = self.option_text(i, kind);
+                self.drafts.insert(format!("engine_draft:{model}:{name}"), value);
+            }
+        }
+    }
+
+    unsafe fn save_engine_options(&mut self) {
+        let Some(model) = self.selected_speech_model().cloned() else {
+            return;
+        };
+        let mut group = serde_json::Map::new();
+        let fields: Vec<_> = self.engine_fields.iter().take(MAX_OPTIONS).cloned().collect();
+        for (i, (name, kind)) in fields.iter().enumerate() {
+            let text = self.option_text(i, kind);
+            if text.is_empty() {
+                continue;
+            }
+            let value = match kind.as_str() {
+                "integer" => text.parse::<i64>().ok().map(Value::from),
+                "number" => text
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(serde_json::Number::from_f64)
+                    .map(Value::Number),
+                "boolean" => Some(Value::Bool(text == "true")),
+                _ => Some(Value::String(text)),
+            };
+            let Some(value) = value else {
+                self.status = format!("{name} must be {kind}.");
+                return;
+            };
+            group.insert(name.clone(), value);
+        }
+        let saved = self.setting("tts_engine_options").to_string();
+        let saved = if saved.is_empty() { "{}".to_string() } else { saved };
+        match engine_options(&model, group, &saved) {
+            Ok(options) if options != saved => {
+                self.persist("tts_engine_options", &options);
+            }
+            Ok(_) => {}
+            Err(error) => self.status = error,
         }
     }
 
     pub(super) unsafe fn speech_command(&mut self, id: usize, notification: u32) -> bool {
+        let option = (OPTION..OPTION + MAX_OPTIONS).contains(&id);
         match (id, notification) {
-            (610, CBN_SELCHANGE) => {
-                self.capture_drafts();
-                let index = SendMessageW(self.control(610), CB_GETCURSEL, None, None).0 as usize;
+            (MODEL, CBN_SELCHANGE) => {
+                self.capture_engine_draft();
+                let index = SendMessageW(self.control(MODEL), CB_GETCURSEL, None, None).0 as usize;
                 let model = index
                     .checked_sub(1)
                     .and_then(|i| self.speech_models.get(i))
@@ -256,8 +288,9 @@ impl App {
                 self.persist("tts_model", &model);
                 self.render();
             }
-            (611, CBN_SELCHANGE) => {
-                let index = SendMessageW(self.control(611), CB_GETCURSEL, None, None).0 as usize;
+            (VOICE_LIST, CBN_SELCHANGE) => {
+                let index =
+                    SendMessageW(self.control(VOICE_LIST), CB_GETCURSEL, None, None).0 as usize;
                 let voice = index
                     .checked_sub(1)
                     .and_then(|i| self.selected_speech_model()?.capabilities.voices.get(i))
@@ -267,47 +300,52 @@ impl App {
                     self.persist(&format!("tts_voice:{}", model.id), &voice);
                 }
             }
-            (614, BN_CLICKED) => {
-                self.capture_drafts();
+            (REFRESH, BN_CLICKED) => {
+                self.capture_engine_draft();
                 self.refresh_speech_models();
+                self.status = "Loading speech models...".into();
                 self.render();
+                let _ = SetFocus(Some(self.control(MODEL)));
             }
-            (621, BN_CLICKED) => {
-                let value = self.text(620);
-                if value.chars().count() > 1024 {
-                    self.status = "Voice instructions are limited to 1,024 characters.".into();
-                } else if let Some(model) = self.selected_speech_model() {
-                    self.persist(&format!("tts_voice_instruction:{}", model.id), &value);
+            (INSTRUCTION, EN_KILLFOCUS) => {
+                if self.control(INSTRUCTION).0.is_null() {
+                    return true;
                 }
-            }
-            (623, BN_CLICKED) => {
-                let Some(model) = self.selected_speech_model().cloned() else {
+                let Some(key) = self
+                    .selected_speech_model()
+                    .map(|m| format!("tts_voice_instruction:{}", m.id))
+                else {
                     return true;
                 };
-                match engine_options(
-                    &model,
-                    &self.text(622),
-                    self.drafts
-                        .get("tts_engine_options")
-                        .map_or("{}", String::as_str),
-                ) {
-                    Ok(options) => {
-                        self.persist("tts_engine_options", &options);
-                    }
-                    Err(error) => self.status = error,
+                let value = self.text(INSTRUCTION);
+                if value.chars().count() > 1024 {
+                    self.status = "Voice instructions are limited to 1,024 characters.".into();
+                } else if self.runtime.get_setting(&key).unwrap_or_default() != value {
+                    self.persist(&key, &value);
                 }
             }
-            (625, BN_CLICKED) => {
-                let enabled = SendMessageW(self.control(625), BM_GETCHECK, None, None).0 != 0;
+            (_, EN_KILLFOCUS) if option => {
+                if !self.control(id).0.is_null() {
+                    self.save_engine_options();
+                }
+            }
+            (_, CBN_SELCHANGE) if option => self.save_engine_options(),
+            (VIRTUAL_MIC, BN_CLICKED) => {
+                let enabled =
+                    SendMessageW(self.control(VIRTUAL_MIC), BM_GETCHECK, None, None).0 != 0;
                 self.persist("tts_virtual_mic", if enabled { "true" } else { "false" });
             }
-            (624, BN_CLICKED) => {
+            (AUDIO_FOLDER, BN_CLICKED) => {
                 use std::os::windows::ffi::OsStrExt;
-                let folder = self.runtime.speech_audio_dir().expect("the native runtime is built with speech");
+                let folder = self
+                    .runtime
+                    .speech_audio_dir()
+                    .expect("the native runtime is built with speech");
                 if let Err(error) = std::fs::create_dir_all(&folder) {
                     self.status = format!("Could not create the audio folder: {error}");
                 } else {
-                    let path: Vec<u16> = folder.as_os_str().encode_wide().chain(Some(0)).collect();
+                    let path: Vec<u16> =
+                        folder.as_os_str().encode_wide().chain(Some(0)).collect();
                     let result = ShellExecuteW(
                         Some(self.window),
                         w!("open"),
@@ -326,37 +364,27 @@ impl App {
                     };
                 }
             }
-            (640..=644, BN_CLICKED) => {
-                let value = self.text(id - 10);
-                self.persist(SHORTCUTS[id - 640].0, value.trim());
-            }
             _ => return false,
         }
         true
     }
 }
 
-fn engine_options(model: &SpeechModel, draft: &str, saved: &str) -> Result<String, String> {
-    let group: serde_json::Map<String, Value> =
-        serde_json::from_str(draft).map_err(|e| format!("Expected a JSON object: {e}"))?;
-    for (name, value) in &group {
-        let kind = model
-            .capabilities
-            .engine_options
-            .get(name)
-            .ok_or_else(|| format!("Unknown {} option: {name}", model.id))?;
-        let valid = match kind.as_str() {
-            "integer" => value.is_i64() || value.is_u64(),
-            "number" => value.is_number(),
-            "boolean" => value.is_boolean(),
-            _ => false,
-        };
-        if !valid {
-            return Err(format!("{name} must be {kind}"));
-        }
+/// `group` replaces the model's saved options; an empty group removes them.
+fn engine_options(
+    model: &SpeechModel,
+    group: serde_json::Map<String, Value>,
+    saved: &str,
+) -> Result<String, String> {
+    if let Some(name) = group.keys().find(|name| !model.capabilities.engine_options.contains_key(*name)) {
+        return Err(format!("Unknown {} option: {name}", model.id));
     }
     let mut groups: serde_json::Map<String, Value> =
         serde_json::from_str(saved).map_err(|e| format!("Invalid saved options: {e}"))?;
-    groups.insert(model.id.clone(), Value::Object(group));
+    if group.is_empty() {
+        groups.remove(&model.id);
+    } else {
+        groups.insert(model.id.clone(), Value::Object(group));
+    }
     Ok(Value::Object(groups).to_string())
 }
