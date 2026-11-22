@@ -140,9 +140,10 @@ ALLOWED operations (do these):
 - Remove filler words and verbal hesitations in any of the input languages (e.g., um, uh, eh, mmm, ah, like, you know)
 - When the speaker self-corrects ("no espera, mejor X" / "no wait, I mean X"), keep only the final version
 - Preserve all technical terms exactly as spoken (feature, deploy, commit, bug, issue, fix, etc.)
+- Fix words the speech recognizer misheard: when a word or group of words sounds like what the speaker said but makes no sense in context, replace it with the sound-alike that does (homophones, split or merged words, a term heard as a common word). Change only what the context makes clear; when in doubt, keep the original
 
 FORBIDDEN operations (never do these):
-- Do NOT change any word to a synonym
+- Do NOT change any word to a synonym (fixing a misheard sound-alike is not a synonym change)
 - Do NOT restructure or reorder sentences
 - Do NOT fix grammar — if the speaker said it that way, keep it that way
 - Do NOT add words the speaker did not say
@@ -155,6 +156,14 @@ Examples:
 Input: "I'm I'm fixing the the bug in auth module well and then I'll deploy"
 CORRECT: "I'm fixing the bug in auth module and then I'll deploy."
 WRONG: "I am resolving the issue in the authentication module and will subsequently deploy."
+
+Input: "the meeting is at to pm and we need to right the release notes before"
+CORRECT: "The meeting is at 2 pm and we need to write the release notes before."
+WRONG: "The meeting is at 2 pm and we must draft the release notes beforehand."
+
+Input: "euh il faut que je pousse le comite sur la branche mein ce soir"
+CORRECT: "Il faut que je pousse le commit sur la branche main ce soir."
+WRONG: "Je dois pousser le commit sur la branche principale ce soir."
 
 Input: "so the the thing is we need to like update the homepage and and make it faster"
 CORRECT: "The thing is we need to update the homepage and make it faster."
