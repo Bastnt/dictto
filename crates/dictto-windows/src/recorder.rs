@@ -10,12 +10,13 @@ use dictto_core::audio::emit_waveform;
 use dictto_core::audio::MicrophoneInfo;
 use crate::device_monitor::playback_generation;
 use dictto_core::audio::DeviceSelection;
+use dictto_core::platform::SampleTap;
 
 /// Commands sent from WindowsRecorder to the persistent capture thread.
 enum CaptureCmd {
     /// Begin capturing audio with the current device selection.
     /// Carries a fresh DeviceSelection so the thread uses the latest endpoint ID.
-    Start(DeviceSelection, Option<u64>),
+    Start(DeviceSelection, Option<u64>, Option<SampleTap>),
     /// Stop capturing, return samples. Thread responds with Samples or Error.
     Stop,
     /// Release all COM resources and exit. Thread responds with ShutdownAck.
@@ -159,7 +160,7 @@ impl WindowsRecorder {
         self.recording = false;
     }
 
-    pub fn start(&mut self, device: DeviceSelection) -> Result<(), AudioError> {
+    pub fn start(&mut self, device: DeviceSelection, tap: Option<SampleTap>) -> Result<(), AudioError> {
         if self.recording {
             return Err(AudioError::AlreadyRecording);
         }
@@ -176,7 +177,7 @@ impl WindowsRecorder {
             .as_ref()
             .ok_or_else(|| AudioError::DeviceError("No capture thread available".into()))?;
 
-        tx.send(CaptureCmd::Start(device, render_generation)).map_err(|_| {
+        tx.send(CaptureCmd::Start(device, render_generation, tap)).map_err(|_| {
             self.cleanup_dead_thread();
             AudioError::DeviceError("Capture thread died unexpectedly".into())
         })?;
@@ -369,7 +370,7 @@ fn capture_thread_inner(
             };
 
             match cmd {
-                CaptureCmd::Start(fresh_device, render_generation) => {
+                CaptureCmd::Start(fresh_device, render_generation, tap) => {
                     // Re-init WASAPI if it was released after previous Stop.
                     // Use fresh_device (not spawn-time device) so we get the current endpoint.
                     if wasapi.is_none() {
@@ -415,6 +416,7 @@ fn capture_thread_inner(
                                         new_ch,
                                         new_bits,
                                         render_generation,
+                                        tap.as_ref(),
                                         cmd_rx,
                                         result_tx,
                                         app_handle,
@@ -452,6 +454,7 @@ fn capture_thread_inner(
                         ch,
                         bits,
                         render_generation,
+                        tap.as_ref(),
                         cmd_rx,
                         result_tx,
                         app_handle,
@@ -669,6 +672,7 @@ unsafe fn capture_loop(
     device_channels: u16,
     device_bits: u16,
     render_generation: Option<u64>,
+    tap: Option<&SampleTap>,
     cmd_rx: &mpsc::Receiver<CaptureCmd>,
     result_tx: &mpsc::Sender<CaptureResult>,
     app_handle: &Option<host::AppHandle>,
@@ -718,7 +722,7 @@ unsafe fn capture_loop(
                 let _ = result_tx.send(CaptureResult::ShutdownAck);
                 return true;
             }
-            Ok(CaptureCmd::Start(_, _)) => {
+            Ok(CaptureCmd::Start(..)) => {
                 log::warn!("[WindowsRecorder] Ignoring duplicate Start command during capture");
             }
             Err(mpsc::TryRecvError::Empty) => {}
@@ -826,6 +830,9 @@ unsafe fn capture_loop(
                 let resampled = resampled.as_deref().unwrap_or(&samples);
                 let bars = waveform.push(&samples, resampled.len());
                 sample_buffer.extend_from_slice(resampled);
+                if let Some(tap) = tap {
+                    tap(resampled);
+                }
                 if let (Some(bars), Some(handle)) = (bars, app_handle) {
                     emit_waveform(handle, bars);
                 }
@@ -1102,7 +1109,10 @@ impl dictto_core::platform::Recorder for WindowsRecorder {
         WindowsRecorder::set_app_handle(self, app)
     }
     fn start(&mut self, device: DeviceSelection) -> Result<(), AudioError> {
-        WindowsRecorder::start(self, device)
+        WindowsRecorder::start(self, device, None)
+    }
+    fn start_with_tap(&mut self, device: DeviceSelection, tap: SampleTap) -> Result<(), AudioError> {
+        WindowsRecorder::start(self, device, Some(tap))
     }
     fn stop(&mut self) -> Result<Vec<u8>, AudioError> {
         WindowsRecorder::stop(self)
@@ -1155,7 +1165,7 @@ mod tests {
         use windows::core::PCWSTR;
         use windows::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_SYNC};
         let mut recorder = WindowsRecorder::new();
-        recorder.start(DeviceSelection::PlaybackLoopback).unwrap();
+        recorder.start(DeviceSelection::PlaybackLoopback, None).unwrap();
         let frames = (0..SAMPLE_RATE / 3).map(|i| {
             (2000.0 * (i as f32 * 440.0 * std::f32::consts::TAU / SAMPLE_RATE as f32).sin()) as i16
         }).collect::<Vec<_>>();

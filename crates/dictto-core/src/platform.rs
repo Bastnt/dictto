@@ -3,9 +3,19 @@ use std::sync::Arc;
 use crate::host::AppHandle;
 use std::sync::OnceLock;
 
+/// Receives each captured packet as 16 kHz mono samples, on the capture thread.
+pub type SampleTap = Arc<dyn Fn(&[i16]) + Send + Sync>;
+
 pub trait Recorder: Send {
     fn set_app_handle(&mut self, app: AppHandle);
     fn start(&mut self, device: DeviceSelection) -> Result<(), AudioError>;
+    /// Like `start`, also handing every packet kept in the recording to `tap` as it is
+    /// captured. A recorder that cannot stream ignores `tap`, and dictation then
+    /// transcribes the whole recording after it stops.
+    fn start_with_tap(&mut self, device: DeviceSelection, tap: SampleTap) -> Result<(), AudioError> {
+        let _ = tap;
+        self.start(device)
+    }
     fn stop(&mut self) -> Result<Vec<u8>, AudioError>;
     fn cancel(&mut self);
     fn is_recording(&self) -> bool;
