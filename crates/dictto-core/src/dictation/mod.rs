@@ -6,6 +6,7 @@ use crate::keys;
 use crate::live::LiveTranscript;
 use crate::pipeline::RecordedAudio;
 use crate::platform::{Sound, Sounds};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Dictation chord state plus the host's input suspension. Suspension is kept apart from
@@ -190,9 +191,21 @@ fn emit_pending_state(app: &AppHandle, pending: usize) {
     emit_state(app, if pending > 0 { "processing" } else { "idle" }, None);
 }
 
-fn take_retry_audio(audio: &mut Option<RecordedAudio>, pending: usize) -> Option<RecordedAudio> {
+/// Failed recordings kept for a tap to retry; past this the oldest is dropped.
+const MAX_KEPT_FAILURES: usize = 20;
+
+/// Every failure is kept until retried, whatever succeeds or fails after it.
+fn keep_failed(kept: &mut VecDeque<RecordedAudio>, audio: RecordedAudio) {
+    if kept.len() == MAX_KEPT_FAILURES {
+        log::warn!("[hotkey] {} recordings are waiting for a retry; dropping the oldest", MAX_KEPT_FAILURES);
+        kept.pop_front();
+    }
+    kept.push_back(audio);
+}
+
+fn take_retry_audio(kept: &mut VecDeque<RecordedAudio>, pending: usize) -> Option<RecordedAudio> {
     if pending > 0 { return None; }
-    audio.take().map(|mut audio| {
+    kept.pop_front().map(|mut audio| {
         audio.released_at = std::time::Instant::now();
         audio
     })
@@ -368,22 +381,23 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         let pipeline_app = app_handle.clone();
         host::async_runtime::spawn(async move {
             while let Some(mut audio) = pipeline_rx.recv().await {
+                // Never retried on its own: a late paste would land wherever the cursor is by then.
                 let result = crate::pipeline::run_pipeline(&pipeline_app, &mut audio).await;
-                match &result {
-                    Ok(()) => {}
-                    Err(error) => {
-                        log::error!("[hotkey] Pipeline error: {}", error);
-                        let _ = pipeline_app.emit(
-                            events::DICTATION_ERROR,
-                            serde_json::json!({"message": error.to_string()}),
-                        );
-                    }
+                let failed = crate::pipeline::retryable_audio(audio, &result);
+                if let Err(error) = &result {
+                    log::error!("[hotkey] Pipeline error: {}", error);
+                    let message = if failed.is_some() {
+                        format!("{} The recording is kept: tap the shortcut to retry.", error)
+                    } else {
+                        error.to_string()
+                    };
+                    let _ = pipeline_app.emit(events::DICTATION_ERROR, serde_json::json!({"message": message}));
                 }
-                let _ = completed_tx.send(crate::pipeline::retryable_audio(audio, &result));
+                let _ = completed_tx.send(failed);
             }
         });
         let mut pending_pipelines = 0usize;
-        let mut retry_audio: Option<RecordedAudio> = None;
+        let mut retry_audio: VecDeque<RecordedAudio> = VecDeque::new();
         let mut live: Option<LiveTranscript> = None;
 
         loop {
@@ -412,7 +426,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                             emit_state(&app_handle, "recording", Some("hold"));
 
                             // EAGER START: begin recording immediately on key-down
-                            if let Some(limit_secs) = start_recording(&app_handle, sounds, retry_audio.is_none() && pending_pipelines == 0, pending_pipelines, &mut live) {
+                            if let Some(limit_secs) = start_recording(&app_handle, sounds, retry_audio.is_empty() && pending_pipelines == 0, pending_pipelines, &mut live) {
 
                                 // Spawn recording limit timer
                                 let timer_handle_clone = timer_handle.clone();
@@ -644,7 +658,9 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                         log::error!("[hotkey] Pipeline worker stopped");
                         break;
                     };
-                    retry_audio = failed_audio;
+                    if let Some(audio) = failed_audio {
+                        keep_failed(&mut retry_audio, audio);
+                    }
                     pending_pipelines = pending_pipelines.saturating_sub(1);
                     if matches!(state, State::Idle) {
                         emit_pending_state(&app_handle, pending_pipelines);
@@ -687,11 +703,23 @@ mod tests {
 
     #[test]
     fn retry_waits_for_pending_transcriptions_and_cannot_be_queued_twice() {
-        let mut audio = Some(RecordedAudio::new(vec![1, 2, 3], std::time::Instant::now()));
-        assert!(take_retry_audio(&mut audio, 1).is_none());
-        assert!(audio.is_some());
-        assert_eq!(take_retry_audio(&mut audio, 0).unwrap().data, vec![1, 2, 3]);
-        assert!(take_retry_audio(&mut audio, 0).is_none());
+        let mut kept = VecDeque::new();
+        keep_failed(&mut kept, RecordedAudio::new(vec![1, 2, 3], std::time::Instant::now()));
+        assert!(take_retry_audio(&mut kept, 1).is_none());
+        assert_eq!(kept.len(), 1);
+        assert_eq!(take_retry_audio(&mut kept, 0).unwrap().data, vec![1, 2, 3]);
+        assert!(take_retry_audio(&mut kept, 0).is_none());
+    }
+
+    #[test]
+    fn failures_are_kept_in_order_and_bounded() {
+        let mut kept = VecDeque::new();
+        for index in 0..=MAX_KEPT_FAILURES {
+            keep_failed(&mut kept, RecordedAudio::new(vec![index as u8], std::time::Instant::now()));
+        }
+        assert_eq!(kept.len(), MAX_KEPT_FAILURES);
+        assert_eq!(take_retry_audio(&mut kept, 0).unwrap().data, vec![1]);
+        assert_eq!(take_retry_audio(&mut kept, 0).unwrap().data, vec![2]);
     }
 
     #[test]
