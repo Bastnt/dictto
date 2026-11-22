@@ -1,9 +1,10 @@
 //! Cuts a live 16 kHz mono capture into chunks at pauses so each chunk can be transcribed
 //! while the user keeps speaking, and squeezes long silences out of every chunk.
 //!
-//! A chunk is only cut once it holds enough speech to give the model context, and the
-//! pause needed to cut shrinks as that speech grows: a short phrase waits through any
-//! pause, a long monologue is cut at the next breath.
+//! A chunk is only cut once it holds enough audio to give the model context, and the
+//! pause needed to cut shrinks as that audio grows: a short phrase waits through any
+//! pause, a long monologue is cut at the next breath. Audio is counted up to the pause,
+//! silences included, so a chunk's length is what the user perceives as elapsed time.
 use super::dsp::{SAMPLE_RATE, SILENCE_RMS_THRESHOLD};
 
 const WINDOW: usize = SAMPLE_RATE as usize / 50;
@@ -11,12 +12,12 @@ const fn windows(ms: usize) -> usize {
     ms / 20
 }
 
-/// Below this much speech a chunk is never cut, whatever the pause.
-const MIN_SPEECH: usize = windows(6_000);
-/// Pause needed to cut at `MIN_SPEECH`, shrinking linearly to `SHORTEST_PAUSE` at `FULL_SPEECH`.
+/// Below this much audio before the pause a chunk is never cut, whatever the pause.
+const MIN_AUDIO: usize = windows(6_000);
+/// Pause needed to cut at `MIN_AUDIO`, shrinking linearly to `SHORTEST_PAUSE` at `FULL_AUDIO`.
 const LONGEST_PAUSE: usize = windows(4_000);
 const SHORTEST_PAUSE: usize = windows(600);
-const FULL_SPEECH: usize = windows(30_000);
+const FULL_AUDIO: usize = windows(30_000);
 /// Continuous speech or noise is cut here regardless, to bound one request.
 const MAX_CHUNK: usize = windows(60_000);
 /// Silence kept on each side of speech; longer pauses are shortened to twice this.
@@ -29,12 +30,12 @@ const FLOOR_RATIO: f64 = 3.0;
 const PEAK_RATIO: f64 = 0.1;
 const SMOOTHING: usize = windows(200);
 
-pub fn required_pause(speech_windows: usize) -> Option<usize> {
-    if speech_windows < MIN_SPEECH {
+pub fn required_pause(audio_windows: usize) -> Option<usize> {
+    if audio_windows < MIN_AUDIO {
         return None;
     }
-    let progress = (speech_windows - MIN_SPEECH).min(FULL_SPEECH - MIN_SPEECH);
-    Some(LONGEST_PAUSE - (LONGEST_PAUSE - SHORTEST_PAUSE) * progress / (FULL_SPEECH - MIN_SPEECH))
+    let progress = (audio_windows - MIN_AUDIO).min(FULL_AUDIO - MIN_AUDIO);
+    Some(LONGEST_PAUSE - (LONGEST_PAUSE - SHORTEST_PAUSE) * progress / (FULL_AUDIO - MIN_AUDIO))
 }
 
 pub struct Segmenter {
@@ -42,7 +43,6 @@ pub struct Segmenter {
     /// Window-aligned samples of the chunk being built, with each window's RMS.
     chunk: Vec<i16>,
     levels: Vec<f64>,
-    speech_windows: usize,
     trailing_silence: usize,
     recent: Vec<f64>,
     floor: f64,
@@ -55,7 +55,6 @@ impl Default for Segmenter {
             partial: Vec::new(),
             chunk: Vec::new(),
             levels: Vec::new(),
-            speech_windows: 0,
             trailing_silence: 0,
             recent: Vec::new(),
             floor: f64::INFINITY,
@@ -91,12 +90,12 @@ impl Segmenter {
         let rms = self.listen(window);
         self.chunk.extend_from_slice(window);
         if rms >= self.threshold() {
-            self.speech_windows += 1;
             self.trailing_silence = 0;
         } else {
             self.trailing_silence += 1;
         }
-        let paused = required_pause(self.speech_windows).is_some_and(|pause| self.trailing_silence >= pause);
+        let before_pause = self.levels.len() - self.trailing_silence;
+        let paused = required_pause(before_pause).is_some_and(|pause| self.trailing_silence >= pause);
         if paused || self.levels.len() >= MAX_CHUNK {
             return self.cut();
         }
@@ -131,7 +130,6 @@ impl Segmenter {
         let chunk = std::mem::take(&mut self.chunk);
         let threshold = self.threshold();
         let speech: Vec<bool> = std::mem::take(&mut self.levels).iter().map(|&rms| rms >= threshold).collect();
-        self.speech_windows = 0;
         self.trailing_silence = 0;
         (speech.iter().filter(|&&s| s).count() >= MIN_CHUNK_SPEECH).then(|| compress(&chunk, &speech))
     }
@@ -195,6 +193,16 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(ms(&chunks[0]), 9_000 + 2 * PAD_MS + 500 + PAD_MS);
         assert!(segmenter.finish().is_none());
+    }
+
+    #[test]
+    fn pauses_count_toward_the_audio_needed_to_cut() {
+        let mut segmenter = Segmenter::new();
+        // Only 4 s of speech, but 7 s of audio once the first pause is counted.
+        assert!(feed(&mut segmenter, &[tone(2_000), silence(3_000), tone(2_000)]).is_empty());
+        let chunks = feed(&mut segmenter, &[silence(4_000)]);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(ms(&chunks[0]), 2_000 + 2 * PAD_MS + 2_000 + PAD_MS);
     }
 
     #[test]
