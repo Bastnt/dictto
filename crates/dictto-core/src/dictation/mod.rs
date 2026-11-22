@@ -3,6 +3,7 @@ use crate::events;
 use crate::audio::DeviceSelection;
 use crate::host::{self, AppHandle, Emitter, Manager};
 use crate::keys;
+use crate::live::LiveTranscript;
 use crate::pipeline::RecordedAudio;
 use crate::platform::{Sound, Sounds};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -155,7 +156,7 @@ fn play_sound(sound: Sound, app: &AppHandle, sounds: &dyn Sounds) {
 
 /// Synchronously stop the recorder and return WAV data.
 /// Returns None for empty/short recordings or stop failures.
-fn stop_recording_sync(app: &AppHandle, sounds: &dyn Sounds) -> Option<RecordedAudio> {
+fn stop_recording_sync(app: &AppHandle, sounds: &dyn Sounds, live: Option<LiveTranscript>) -> Option<RecordedAudio> {
     let t = std::time::Instant::now();
     log::debug!("[hotkey] stop_recording_sync: acquiring recorder lock...");
     let app_state = app.state::<crate::CoreState>();
@@ -168,7 +169,7 @@ fn stop_recording_sync(app: &AppHandle, sounds: &dyn Sounds) -> Option<RecordedA
                 t.elapsed(),
                 data.len() as f64 / 1024.0
             );
-            Some(RecordedAudio { data, released_at: t })
+            Some(RecordedAudio { data, released_at: t, live })
         }
         Err(crate::audio::AudioError::EmptyRecording) => {
             log::debug!("[hotkey] stop_recording_sync: empty recording (too short or silent)");
@@ -230,9 +231,10 @@ fn cancel_recording(app: &AppHandle, sounds: &dyn Sounds) {
     play_sound(Sound::Stop, app, sounds); // same stop sound for cancel per user decision
 }
 
-/// Start audio recording with the configured device.
+/// Start audio recording with the configured device, transcribing it live as it goes.
 /// Returns the recording limit in seconds, or None on failure.
-fn start_recording(app: &AppHandle, sounds: &dyn Sounds, preload: bool, pending: usize) -> Option<u64> {
+fn start_recording(app: &AppHandle, sounds: &dyn Sounds, preload: bool, pending: usize,
+    live: &mut Option<LiveTranscript>) -> Option<u64> {
     let app_state = app.state::<crate::CoreState>();
 
     let validation = {
@@ -275,8 +277,9 @@ fn start_recording(app: &AppHandle, sounds: &dyn Sounds, preload: bool, pending:
     log::debug!("[hotkey] start_recording: device={:?}, limit={}s", device_selection, limit_secs);
 
     // Step 3: Lock recorder and start (AFTER reading device_monitor)
+    let (tap, transcript) = crate::live::start(app);
     let mut recorder = app_state.audio_recorder.lock().unwrap();
-    if let Err(e) = recorder.start(device_selection) {
+    if let Err(e) = recorder.start_with_tap(device_selection, tap) {
         drop(recorder);
         log::error!("[hotkey] Failed to start recording: {}", e);
         emit_pending_state(app, pending);
@@ -284,6 +287,7 @@ fn start_recording(app: &AppHandle, sounds: &dyn Sounds, preload: bool, pending:
         return None;
     }
     drop(recorder); // explicit drop to release mutex before play_sound acquires db mutex
+    *live = Some(transcript);
 
     if preload { crate::warmup::schedule(app); }
     play_sound(Sound::Start, app, sounds);
@@ -363,8 +367,8 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         let (completed_tx, mut completed_rx) = tokio::sync::mpsc::unbounded_channel::<Option<RecordedAudio>>();
         let pipeline_app = app_handle.clone();
         host::async_runtime::spawn(async move {
-            while let Some(audio) = pipeline_rx.recv().await {
-                let result = crate::pipeline::run_pipeline(&pipeline_app, &audio).await;
+            while let Some(mut audio) = pipeline_rx.recv().await {
+                let result = crate::pipeline::run_pipeline(&pipeline_app, &mut audio).await;
                 match &result {
                     Ok(()) => {}
                     Err(error) => {
@@ -380,6 +384,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         });
         let mut pending_pipelines = 0usize;
         let mut retry_audio: Option<RecordedAudio> = None;
+        let mut live: Option<LiveTranscript> = None;
 
         loop {
             tokio::select! {
@@ -407,7 +412,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                             emit_state(&app_handle, "recording", Some("hold"));
 
                             // EAGER START: begin recording immediately on key-down
-                            if let Some(limit_secs) = start_recording(&app_handle, sounds, retry_audio.is_none() && pending_pipelines == 0, pending_pipelines) {
+                            if let Some(limit_secs) = start_recording(&app_handle, sounds, retry_audio.is_none() && pending_pipelines == 0, pending_pipelines, &mut live) {
 
                                 // Spawn recording limit timer
                                 let timer_handle_clone = timer_handle.clone();
@@ -487,7 +492,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                                 }
                             }
 
-                            let audio_data = stop_recording_sync(&app_handle, sounds);
+                            let audio_data = stop_recording_sync(&app_handle, sounds, live.take());
                             state = State::Idle;
                             enqueue_pipeline(&app_handle, audio_data, &pipeline_tx, &mut pending_pipelines);
                         }
@@ -506,7 +511,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                                 }
                             }
 
-                            let audio_data = stop_recording_sync(&app_handle, sounds);
+                            let audio_data = stop_recording_sync(&app_handle, sounds, live.take());
                             state = State::Idle;
                             enqueue_pipeline(&app_handle, audio_data, &pipeline_tx, &mut pending_pipelines);
                         }
@@ -544,6 +549,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
 
                             // Stop WASAPI stream and discard audio buffer
                             cancel_recording(&app_handle, sounds);
+                            live = None;
                             state = State::Idle;
                             if let Some(audio) = take_retry_audio(&mut retry_audio, pending_pipelines) {
                                 enqueue_pipeline(&app_handle, Some(audio), &pipeline_tx, &mut pending_pipelines);
@@ -558,7 +564,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                             log::debug!("[hotkey] {} + limit_expired → stopping recording", state.name());
                             // Recording limit reached — stop and process
                             tap_timer = None;
-                            let audio_data = stop_recording_sync(&app_handle, sounds);
+                            let audio_data = stop_recording_sync(&app_handle, sounds, live.take());
                             state = State::Idle;
                             enqueue_pipeline(&app_handle, audio_data, &pipeline_tx, &mut pending_pipelines);
                         }
@@ -579,7 +585,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                     match (&state, action) {
                         (State::Idle, BarAction::Start) => {
                             // UI click → start continuous recording directly
-                            if let Some(limit_secs) = start_recording(&app_handle, sounds, true, pending_pipelines) {
+                            if let Some(limit_secs) = start_recording(&app_handle, sounds, true, pending_pipelines, &mut live) {
                                 emit_state(&app_handle, "recording", Some("continuous"));
 
                                 // Spawn recording limit timer
@@ -610,7 +616,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                                     handle.abort();
                                 }
                             }
-                            let audio_data = stop_recording_sync(&app_handle, sounds);
+                            let audio_data = stop_recording_sync(&app_handle, sounds, live.take());
                             state = State::Idle;
                             enqueue_pipeline(&app_handle, audio_data, &pipeline_tx, &mut pending_pipelines);
                         }
@@ -623,6 +629,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                                 }
                             }
                             cancel_recording(&app_handle, sounds);
+                            live = None;
                             state = State::Idle;
                             emit_pending_state(&app_handle, pending_pipelines);
                         }
@@ -680,10 +687,7 @@ mod tests {
 
     #[test]
     fn retry_waits_for_pending_transcriptions_and_cannot_be_queued_twice() {
-        let mut audio = Some(RecordedAudio {
-            data: vec![1, 2, 3],
-            released_at: std::time::Instant::now(),
-        });
+        let mut audio = Some(RecordedAudio::new(vec![1, 2, 3], std::time::Instant::now()));
         assert!(take_retry_audio(&mut audio, 1).is_none());
         assert!(audio.is_some());
         assert_eq!(take_retry_audio(&mut audio, 0).unwrap().data, vec![1, 2, 3]);

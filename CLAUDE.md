@@ -30,6 +30,7 @@ cargo build --release -p dictto-native    # one app (-p dictto for Tauri)
 Triggered by `Ctrl+Win` (push-to-talk):
 1. Key press -> starts audio capture (WASAPI on Windows)
 2. Key release -> stops recording, returns WAV bytes (16kHz mono)
+   While recording, `audio/segmenter.rs` cuts the audio at pauses and `live.rs` transcribes each chunk, so release only waits for the last one; the WAV is the fallback when that fails
 3. Transcribe via OpenAI Whisper API
 4. Clean text via OpenAI GPT
 5. Inject text via clipboard (Ctrl+V)
@@ -44,6 +45,7 @@ crates/
 │   ├── host.rs               # AppHandle/Emitter/async_runtime (event sink, multi-state)
 │   ├── dictation/            # Push-to-talk state machine (fed by key_event)
 │   ├── pipeline.rs           # Recording -> transcribe -> clean -> paste
+│   ├── live.rs               # Chunk-by-chunk transcription during recording
 │   ├── transcription/, llm/  # TranscriptionEngine, LLMProcessor + OpenAI impls
 │   ├── audio/, keys.rs, db/  # Device monitor state, chords, SQLite + keyring
 │   └── speech/               # Feature `speech` (native only): TTS, cache, mic route

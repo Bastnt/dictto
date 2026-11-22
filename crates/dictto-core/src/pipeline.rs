@@ -32,6 +32,55 @@ pub enum PipelineError {
 pub struct RecordedAudio {
     pub data: Vec<u8>,
     pub released_at: Instant,
+    /// Chunks already being transcribed while this was recorded; `data` stays the
+    /// fallback when it yields nothing.
+    pub live: Option<crate::live::LiveTranscript>,
+}
+
+impl RecordedAudio {
+    pub fn new(data: Vec<u8>, released_at: Instant) -> Self {
+        Self { data, released_at, live: None }
+    }
+}
+
+/// What a dictation reads from the settings, once per pipeline or live transcript.
+pub(crate) struct Settings {
+    pub languages: Vec<String>,
+    pub paste_delay_ms: u64,
+    pub llm_model: String,
+    pub http_client: reqwest::Client,
+    pub base_url: String,
+    pub transcription_model: String,
+    pub cleanup_enabled: bool,
+    pub injector: std::sync::Arc<dyn crate::platform::TextInjector>,
+}
+
+impl Settings {
+    pub fn load(app: &AppHandle) -> Self {
+        let state = app.state::<crate::CoreState>();
+        let db = state.db.lock().unwrap();
+        let languages_json = db
+            .get_setting("languages")
+            .unwrap_or_else(|| r#"["en"]"#.to_string());
+        let languages: Vec<String> = serde_json::from_str(&languages_json).unwrap_or_else(|_| {
+            log::warn!(
+                "[pipeline] Failed to parse languages JSON '{}', falling back to [\"en\"]",
+                languages_json
+            );
+            vec!["en".to_string()]
+        });
+        Self {
+            languages,
+            paste_delay_ms: db.get_setting("paste_delay_ms").and_then(|v| v.parse().ok()).unwrap_or(150),
+            llm_model: db.get_setting("llm_model").unwrap_or_else(|| "gpt-4.1-nano".to_string()),
+            http_client: state.http_client.clone(),
+            base_url: db.get_setting("api_base_url").unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+            transcription_model: db.get_setting("transcription_model")
+                .unwrap_or_else(|| "gpt-4o-mini-transcribe".to_string()),
+            cleanup_enabled: db.get_setting("cleanup_enabled").as_deref() != Some("false"),
+            injector: state.platform.injector.clone(),
+        }
+    }
 }
 
 pub fn retryable_audio(recording: RecordedAudio, result: &Result<(), PipelineError>) -> Option<RecordedAudio> {
@@ -41,7 +90,7 @@ pub fn retryable_audio(recording: RecordedAudio, result: &Result<(), PipelineErr
     }
 }
 
-pub async fn run_pipeline(app: &AppHandle, recording: &RecordedAudio) -> Result<(), PipelineError> {
+pub async fn run_pipeline(app: &AppHandle, recording: &mut RecordedAudio) -> Result<(), PipelineError> {
     // Retrieving the key first keeps a missing key from costing a settings read.
     let t = Instant::now();
     let api_key = keystore::get_api_key().map_err(|e| {
@@ -55,11 +104,11 @@ pub async fn run_pipeline(app: &AppHandle, recording: &RecordedAudio) -> Result<
 /// Separate from `run_pipeline` so tests can run it without touching the OS credential store.
 pub async fn run_pipeline_with_key(
     app: &AppHandle,
-    recording: &RecordedAudio,
+    recording: &mut RecordedAudio,
     api_key: String,
 ) -> Result<(), PipelineError> {
     let pipeline_start = Instant::now();
-    let audio_data = &recording.data;
+    let audio_data = &recording.data[..];
     let released_at = recording.released_at;
     let audio_size_kb = audio_data.len() as f64 / 1024.0;
     log::info!(
@@ -67,39 +116,9 @@ pub async fn run_pipeline_with_key(
         audio_size_kb, pipeline_start.duration_since(released_at)
     );
 
-    // 1. Get settings + shared HTTP client
     let t = Instant::now();
-    let (languages, paste_delay_ms, llm_model, http_client, base_url, transcription_model, cleanup_enabled, injector) = {
-        let state = app.state::<crate::CoreState>();
-        let db = state.db.lock().unwrap();
-
-        // Read languages JSON array from DB (LANG-01)
-        let languages_json = db
-            .get_setting("languages")
-            .unwrap_or_else(|| r#"["en"]"#.to_string());
-        let languages: Vec<String> = serde_json::from_str(&languages_json).unwrap_or_else(|_| {
-            log::warn!(
-                "[pipeline] Failed to parse languages JSON '{}', falling back to [\"en\"]",
-                languages_json
-            );
-            vec!["en".to_string()]
-        });
-
-        let paste_delay: u64 = db
-            .get_setting("paste_delay_ms")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(150);
-        let model = db
-            .get_setting("llm_model")
-            .unwrap_or_else(|| "gpt-4.1-nano".to_string());
-        let base_url = db.get_setting("api_base_url")
-            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-        let transcription_model = db.get_setting("transcription_model")
-            .unwrap_or_else(|| "gpt-4o-mini-transcribe".to_string());
-        let client = state.http_client.clone();
-        let cleanup_enabled = db.get_setting("cleanup_enabled").as_deref() != Some("false");
-        (languages, paste_delay, model, client, base_url, transcription_model, cleanup_enabled, state.platform.injector.clone())
-    };
+    let Settings { languages, paste_delay_ms, llm_model, http_client, base_url, transcription_model,
+        cleanup_enabled, injector } = Settings::load(app);
     log::info!(
         "[pipeline] Settings loaded in {:?} (languages={:?}, model={})",
         t.elapsed(),
@@ -107,22 +126,32 @@ pub async fn run_pipeline_with_key(
         llm_model
     );
 
-    // 2. Transcribe audio
     let t = Instant::now();
-    let whisper = OpenAIWhisper::with_client(api_key.clone(), http_client.clone(), base_url.clone(), transcription_model);
-    let config = TranscriptionConfig::from_languages(&languages);
-
-    let transcription = whisper
-        .transcribe(&audio_data, &config)
-        .await
-        .map_err(|e| PipelineError::TranscriptionFailed(e.to_string()))?;
-
-    let raw_text = transcription.text;
-    log::info!(
-        "[pipeline] Transcription done in {:?} ({} chars)",
-        t.elapsed(),
-        raw_text.len()
-    );
+    let live = match recording.live.take() {
+        Some(live) => live.finish().await,
+        None => None,
+    };
+    let raw_text = match live {
+        Some(text) => {
+            log::info!("[pipeline] Live transcription ready {:?} after release ({} chars)",
+                released_at.elapsed(), text.len());
+            text
+        }
+        None => {
+            let whisper = OpenAIWhisper::with_client(api_key.clone(), http_client.clone(), base_url.clone(), transcription_model);
+            let config = TranscriptionConfig::from_languages(&languages);
+            let transcription = whisper
+                .transcribe(audio_data, &config)
+                .await
+                .map_err(|e| PipelineError::TranscriptionFailed(e.to_string()))?;
+            log::info!(
+                "[pipeline] Transcription done in {:?} ({} chars)",
+                t.elapsed(),
+                transcription.text.len()
+            );
+            transcription.text
+        }
+    };
 
     if raw_text.trim().is_empty() {
         log::info!(
@@ -173,7 +202,7 @@ pub async fn run_pipeline_with_key(
 mod tests {
     #[test]
     fn failed_audio_survives_repeated_attempts_until_success() {
-        let mut audio = RecordedAudio { data: vec![1, 2, 3], released_at: Instant::now() };
+        let mut audio = RecordedAudio::new(vec![1, 2, 3], Instant::now());
         for _ in 0..3 {
             audio = retryable_audio(audio, &Err(PipelineError::TranscriptionFailed("503".into())))
                 .expect("failed transcription must retain audio");
@@ -184,7 +213,7 @@ mod tests {
 
     #[test]
     fn successful_transcription_is_not_retried_after_injection_failure() {
-        let audio = RecordedAudio { data: vec![1], released_at: Instant::now() };
+        let audio = RecordedAudio::new(vec![1], Instant::now());
         assert!(retryable_audio(audio, &Err(PipelineError::InjectionFailed("clipboard".into()))).is_none());
     }
 

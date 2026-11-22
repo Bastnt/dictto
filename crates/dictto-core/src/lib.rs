@@ -5,6 +5,7 @@ pub mod events;
 pub mod keys;
 pub mod db;
 pub mod host;
+pub mod live;
 pub mod llm;
 pub mod pipeline;
 pub mod platform;

@@ -241,9 +241,65 @@ async fn pipeline_uses_platform_injector() {
     state.platform.injector = injector.clone();
     let state = std::sync::Arc::new(state);
     let app = super::host::AppHandle::new(&state, std::sync::Arc::new(|_: &str, _: serde_json::Value| {}));
-    let recording = super::pipeline::RecordedAudio { data: b"wav".to_vec(), released_at: std::time::Instant::now() };
-    super::pipeline::run_pipeline_with_key(&app, &recording, "test-key".into()).await.unwrap();
+    let mut recording = super::pipeline::RecordedAudio::new(b"wav".to_vec(), std::time::Instant::now());
+    super::pipeline::run_pipeline_with_key(&app, &mut recording, "test-key".into()).await.unwrap();
     request.join().unwrap();
     assert_eq!(*injector.0.lock().unwrap(), vec![("Bonjour".to_string(), 7)]);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn live_transcript_sends_each_chunk_with_the_text_before_it() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let _activity = ACTIVITY_TEST.lock().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for body in [r#"{"text":" Bonjour à tous."}"#, r#"{"text":"Suite du texte."}"#] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut buf = [0; 65536];
+            loop {
+                let n = stream.read(&mut buf).await.unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buf[..n]);
+                if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let header = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                    let length: usize = header.lines().find_map(|line| line.strip_prefix("content-length:"))
+                        .unwrap().trim().parse().unwrap();
+                    if bytes.len() >= end + 4 + length { break; }
+                }
+            }
+            requests.push(String::from_utf8_lossy(&bytes).into_owned());
+            let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            stream.write_all(reply.as_bytes()).await.unwrap();
+        }
+        requests
+    });
+    let settings = super::pipeline::Settings {
+        languages: vec!["fr".into()],
+        paste_delay_ms: 0,
+        llm_model: String::new(),
+        http_client: reqwest::Client::new(),
+        base_url: base,
+        transcription_model: "whisper-1".into(),
+        cleanup_enabled: false,
+        injector: std::sync::Arc::new(RecordingInjector(Default::default())),
+    };
+    let (samples_tx, samples) = tokio::sync::mpsc::unbounded_channel();
+    let tone = |ms: usize| -> Vec<i16> { (0..ms * 16).map(|i| ((i as f64 * 0.2).sin() * 3000.0) as i16).collect() };
+    let live = tokio::spawn(super::live::run_with_key(settings, "key".into(), samples));
+    // Enough speech then a long pause cuts the first chunk before the recording ends.
+    for part in [tone(9_000), vec![0; 16 * 1_300], tone(2_000)] {
+        for packet in part.chunks(480) {
+            samples_tx.send(packet.to_vec()).unwrap();
+        }
+    }
+    drop(samples_tx);
+    assert_eq!(live.await.unwrap().unwrap().as_deref(), Some("Bonjour à tous. Suite du texte."));
+    let requests = server.await.unwrap();
+    assert!(!requests[0].contains("name=\"prompt\""));
+    assert!(requests[1].contains("name=\"prompt\"\r\n\r\nBonjour à tous."));
+    assert!(requests.iter().all(|r| r.contains("name=\"language\"\r\n\r\nfr")));
 }
