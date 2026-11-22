@@ -2,6 +2,19 @@ import { platform } from './platform.js';
 import { LANGUAGES } from './data/languages.js';
 import './styles/settings.css';
 
+// Shown until get_all_settings answers, and when a key was never saved.
+const DEFAULTS = {
+  api_base_url: 'https://api.openai.com/v1',
+  transcription_model: 'gpt-4o-mini-transcribe',
+  llm_model: 'gpt-4.1-nano',
+  recording_limit_seconds: '300',
+  paste_delay_ms: '150',
+  microphone_device: 'auto-detect',
+};
+const ENDPOINTS = ['https://api.openai.com/v1', 'https://api.groq.com/openai/v1'];
+const LIMITS = [['60', '1 minute'], ['120', '2 minutes'], ['300', '5 minutes'], ['600', '10 minutes'], ['1800', '30 minutes']];
+const DELAYS = [['0', 'None'], ['50', '50 ms'], ['150', '150 ms'], ['300', '300 ms'], ['500', '500 ms']];
+
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -15,6 +28,7 @@ export async function mountSettings(root, api = platform) {
   let hasKey = false;
   let keyHint = '';
   let currentMic = '';
+  let microphones = [];
   let modal = null;
   let deviceTimer;
   let capturing = false;
@@ -22,6 +36,9 @@ export async function mountSettings(root, api = platform) {
   let captureSession = 0;
   let captureQueue = Promise.resolve();
   let candidate = '';
+  // What the endpoint advertises; the runtime caches it until a refresh or a new endpoint or key.
+  const catalog = { transcription: [], chat: [], loaded: false, loading: false, error: '', generation: 0 };
+  const catalogViews = [];
   const subscriptions = [];
   const syncers = new Map();
   const dirty = new Set();
@@ -56,6 +73,7 @@ export async function mountSettings(root, api = platform) {
     }
   };
   const run = async (work) => { try { return await work(); } catch (reason) { report(reason); return false; } };
+  const value = (key) => settings[key] ?? DEFAULTS[key] ?? '';
   function button(text, action, className = 'settings-button') {
     const node = element('button', className, text);
     node.type = 'button';
@@ -68,10 +86,10 @@ export async function mountSettings(root, api = platform) {
     update();
   }
   function sync(key) { for (const update of syncers.get(key) || []) update(); }
-  async function save(key, value) {
-    await api.invoke('set_setting', { key, value });
+  async function save(key, next) {
+    await api.invoke('set_setting', { key, value: next });
     if (disposed) return;
-    settings[key] = value;
+    settings[key] = next;
     sync(key);
   }
   function row(parent, label, description) {
@@ -105,6 +123,28 @@ export async function mountSettings(root, api = platform) {
     action.append(input);
     return input;
   }
+  // A native select that saves on change. A saved value missing from `options()` stays
+  // first, labelled by `missing()`, so loading a list never changes the setting by itself.
+  function settingSelect(key, label, options, missing = () => '') {
+    const select = element('select', 'settings-input settings-select');
+    select.id = key;
+    select.setAttribute('aria-label', label);
+    function render() {
+      const saved = value(key);
+      const list = options();
+      const note = missing();
+      const all = list.some(([item]) => item === saved) ? list : [[saved, note ? `${saved} ${note}` : saved], ...list];
+      select.replaceChildren(...all.map(([item, text]) => {
+        const option = element('option', '', text);
+        option.value = item;
+        return option;
+      }));
+      select.value = saved;
+    }
+    select.addEventListener('change', () => { void run(() => save(key, select.value)).then((ok) => { if (ok === false) render(); }); });
+    register(key, render);
+    return { select, render };
+  }
   const panels = {};
   const tabButtons = {};
   function selectTab(id) {
@@ -115,7 +155,7 @@ export async function mountSettings(root, api = platform) {
       tabButtons[name].tabIndex = name === id ? 0 : -1;
     }
   }
-  for (const [id, label] of [['general', 'General'], ['audio', 'Audio'], ['api', 'API']]) {
+  for (const [id, label] of [['general', 'General'], ['dictation', 'Dictation'], ['connection', 'Connection']]) {
     const tab = button(label, () => selectTab(id), 'settings-tab');
     tab.id = `settings-tab-${id}`;
     tab.setAttribute('role', 'tab');
@@ -146,8 +186,8 @@ export async function mountSettings(root, api = platform) {
   controls.append(button('×', () => win.close(), 'settings-window-button settings-window-close'));
   controls.lastChild.setAttribute('aria-label', 'Close');
   async function updateMaximized() {
-    const value = await win.isMaximized();
-    if (!disposed) { maximize.textContent = value ? '❐' : '□'; maximize.setAttribute('aria-label', value ? 'Restore' : 'Maximize'); }
+    const maximized = await win.isMaximized();
+    if (!disposed) { maximize.textContent = maximized ? '❐' : '□'; maximize.setAttribute('aria-label', maximized ? 'Restore' : 'Maximize'); }
   }
   async function subscribe(promise) {
     const unlisten = await promise;
@@ -155,14 +195,16 @@ export async function mountSettings(root, api = platform) {
   }
   void run(updateMaximized);
   void run(() => subscribe(win.onResized(() => { void run(updateMaximized); })));
-  settingSwitch(panels.general, 'auto_start', 'Start on boot', 'Launch Dictto when you sign in');
-  settingSwitch(panels.general, 'sound_effects_enabled', 'Sound effects', 'Play sounds on recording events');
-  const languageAction = row(panels.general, 'Languages', 'The languages you speak');
+
+  // General
+  settingSwitch(panels.general, 'auto_start', 'Start with Windows', 'Launch Dictto when you sign in');
+  settingSwitch(panels.general, 'sound_effects_enabled', 'Sound effects', 'Play a sound when recording starts and stops');
+  const languageAction = row(panels.general, 'Spoken languages', 'Naming them helps the model; auto-detect guesses each time');
   const languageSummary = element('span', 'settings-inline');
-  languageAction.append(languageSummary, button('Change', openLanguages));
-  languageAction.lastChild.setAttribute('aria-label', 'Change languages');
+  languageAction.append(languageSummary, button('Choose', openLanguages));
+  languageAction.lastChild.setAttribute('aria-label', 'Choose languages');
   function languages() {
-    try { const values = JSON.parse(settings.languages || '[]'); return Array.isArray(values) ? values.filter((value) => typeof value === 'string') : []; }
+    try { const values = JSON.parse(settings.languages || '[]'); return Array.isArray(values) ? values.filter((item) => typeof item === 'string') : []; }
     catch { return []; }
   }
   function flag(language) {
@@ -173,16 +215,29 @@ export async function mountSettings(root, api = platform) {
   register('languages', () => {
     const values = languages();
     languageSummary.replaceChildren();
-    if (values.includes('auto')) { languageSummary.textContent = 'Auto-detect'; return; }
+    if (!values.length || values.includes('auto')) { languageSummary.textContent = 'Auto-detect'; return; }
     const found = values.map((code) => LANGUAGES.find((language) => language.code === code)).filter(Boolean);
     for (const language of found.slice(0, 2)) {
       const item = element('span', 'settings-inline', language.name); item.prepend(flag(language)); languageSummary.append(item);
     }
     if (found.length > 2) languageSummary.append(element('span', '', `+${found.length - 2} more`));
   });
-  const hotkeyAction = row(panels.general, 'Push-to-talk hotkey');
+  const microphone = settingSelect('microphone_device', 'Microphone', () => [
+    ['auto-detect', `Auto-detect${currentMic ? ` (${currentMic.replace(/\s*\([^)]*\)\s*$/, '')})` : ''}`],
+    ...microphones.map((name) => [name, name]),
+  ], () => '(not connected)');
+  row(panels.general, 'Microphone', 'Auto-detect follows the Windows default input').append(microphone.select);
+  async function refreshDevices() {
+    const [list, name] = await Promise.all([api.invoke('list_microphones'), api.invoke('get_current_microphone')]);
+    if (disposed) return;
+    if (Array.isArray(list) && list.every((device) => device && typeof device.name === 'string')) microphones = list.map((device) => device.name);
+    else report('Unable to read the microphone list. Try again.');
+    currentMic = typeof name === 'string' ? name : '';
+    microphone.render();
+  }
+  const hotkeyAction = row(panels.general, 'Dictation shortcut', 'Hold to dictate; double-press to keep recording');
   const hotkeyText = element('span', 'settings-inline');
-  register('hotkey', () => { hotkeyText.textContent = `Currently: ${settings.hotkey || 'Ctrl+Win'}`; });
+  register('hotkey', () => { hotkeyText.textContent = settings.hotkey || 'Ctrl+Win'; });
   const captureInput = element('input', 'settings-input settings-capture');
   captureInput.readOnly = true; captureInput.hidden = true;
   captureInput.setAttribute('aria-label', 'Record shortcut');
@@ -197,7 +252,7 @@ export async function mountSettings(root, api = platform) {
       captureReady = true; captureInput.hidden = false; captureInput.focus();
     } catch (reason) { await endCapture(); throw reason; }
   });
-  hotkeyButton.setAttribute('aria-label', 'Change hotkey');
+  hotkeyButton.setAttribute('aria-label', 'Change shortcut');
   hotkeyAction.append(hotkeyText, hotkeyButton);
   panels.general.append(captureInput);
   function setCapture(active) {
@@ -231,114 +286,119 @@ export async function mountSettings(root, api = platform) {
   captureInput.addEventListener('keyup', async (event) => {
     event.preventDefault(); event.stopPropagation();
     if (!candidate || !capturing) return;
-    const value = candidate;
+    const chord = candidate;
     await endCapture();
-    await run(() => save('hotkey', value)); hotkeyButton.focus();
+    await run(() => save('hotkey', chord)); hotkeyButton.focus();
   });
-  const microphoneAction = row(panels.audio, 'Microphone', 'The input device for recording');
-  const microphoneSummary = element('span', 'settings-inline');
-  function updateMic() {
-    microphoneSummary.textContent = !settings.microphone_device || settings.microphone_device === 'auto-detect'
-      ? `Auto-detect${currentMic ? ` (${currentMic.replace(/\s*\([^)]*\)\s*$/, '')})` : ''}` : settings.microphone_device;
-  }
-  register('microphone_device', updateMic);
-  microphoneAction.append(microphoneSummary, button('Change', openMicrophones));
-  microphoneAction.lastChild.setAttribute('aria-label', 'Change microphone');
-  for (const [label, description] of [['Noise suppression', 'Filter background noise during recording'], ['Auto-detect silence', 'Automatically stop recording after silence']]) {
-    const action = row(panels.audio, label, `${description} · Coming soon`);
-    action.parentElement.classList.add('settings-coming-soon');
-    const input = switchInput(label); input.disabled = true; action.append(input);
-  }
-  async function refreshCurrentMic() { const name = await api.invoke('get_current_microphone'); if (!disposed) { currentMic = name; updateMic(); } }
+
+  // Dictation
+  const notAdvertised = () => catalog.loaded ? '(not advertised)' : '';
+  const transcription = settingSelect('transcription_model', 'Transcription model', () => catalog.transcription.map((id) => [id, id]), notAdvertised);
+  const refresh = button('Refresh', () => loadModels(true));
+  refresh.setAttribute('aria-label', 'Refresh models');
+  const transcriptionField = element('div', 'settings-field');
+  const transcriptionHeading = element('div', 'settings-field-heading');
+  const transcriptionLabel = element('label', 'settings-label', 'Transcription model'); transcriptionLabel.htmlFor = 'transcription_model';
+  transcriptionHeading.append(transcriptionLabel);
+  const picker = element('div', 'settings-actions settings-model-picker');
+  picker.append(transcription.select, refresh);
+  transcriptionField.append(transcriptionHeading, picker);
+  panels.dictation.append(transcriptionField);
+  settingSwitch(transcriptionHeading, 'transcription_warmup', 'Warm up');
+  transcriptionField.append(element('p', 'settings-description', 'Warm-up sends 1 second of silence at startup and when recording starts, so the first words come back faster; provider charges may apply.'));
+  const cleanup = settingSelect('llm_model', 'Cleanup model', () => catalog.chat.map((id) => [id, id]), notAdvertised);
+  const cleanupField = element('div', 'settings-field');
+  const cleanupHeading = element('div', 'settings-field-heading');
+  const cleanupLabel = element('label', 'settings-label', 'Cleanup model'); cleanupLabel.htmlFor = 'llm_model';
+  cleanupHeading.append(cleanupLabel);
+  cleanupField.append(cleanupHeading, cleanup.select, element('p', 'settings-description', 'Fixes punctuation and removes filler words. When off, the raw transcript is pasted.'));
+  panels.dictation.append(cleanupField);
+  settingSwitch(cleanupHeading, 'cleanup_enabled', 'Text cleanup', undefined, true);
+  register('cleanup_enabled', () => { cleanup.select.disabled = settings.cleanup_enabled === 'false'; });
+  catalogViews.push(transcription.render, cleanup.render);
+  const limit = settingSelect('recording_limit_seconds', 'Maximum recording', () => LIMITS, () => 'seconds');
+  row(panels.dictation, 'Maximum recording', 'Recording stops by itself after this long').append(limit.select);
+  const delay = settingSelect('paste_delay_ms', 'Paste delay', () => DELAYS, () => 'ms');
+  row(panels.dictation, 'Paste delay', 'Raise it if the start of pasted text goes missing').append(delay.select);
+
+  // Connection
   const endpoint = element('div', 'settings-endpoint');
   const keySection = element('section', 'settings-key');
-  panels.api.append(endpoint);
-  for (const [key, label, fallback] of [['api_base_url', 'API base URL', 'https://api.openai.com/v1'], ['transcription_model', 'Transcription model', 'gpt-4o-mini-transcribe'], ['llm_model', 'Cleanup model', 'gpt-4.1-nano']]) {
-    const field = element('div', 'settings-field');
-    const heading = element('div', 'settings-field-heading');
-    const labelNode = element('label', 'settings-label', label); labelNode.htmlFor = key;
-    heading.append(labelNode);
-    if (key === 'transcription_model') {
-      field.append(heading, transcriptionPicker(fallback));
-      panels.api.append(field);
-      settingSwitch(heading, 'transcription_warmup', 'Warm transcription model');
-      field.append(element('p', 'settings-description', 'Refresh lists the transcription models the API advertises. Warm-up sends 1 second of silence at startup and recording start; provider charges may apply.'));
-      continue;
+  panels.connection.append(endpoint);
+  const urlField = element('div', 'settings-field');
+  const urlHeading = element('div', 'settings-field-heading');
+  const urlLabel = element('label', 'settings-label', 'Endpoint'); urlLabel.htmlFor = 'api_base_url';
+  urlHeading.append(urlLabel);
+  const urlInput = element('input', 'settings-input'); urlInput.id = 'api_base_url';
+  const presets = element('datalist'); presets.id = 'settings-endpoints';
+  presets.append(...ENDPOINTS.map((url) => { const option = element('option'); option.value = url; return option; }));
+  urlInput.setAttribute('list', presets.id);
+  register('api_base_url', () => { if (!dirty.has('api_base_url') && document.activeElement !== urlInput) urlInput.value = value('api_base_url'); });
+  urlInput.addEventListener('input', () => dirty.add('api_base_url'));
+  // Picking a suggestion fires change without blur; typing saves when focus leaves.
+  urlInput.addEventListener('change', async () => {
+    const next = urlInput.value.trim();
+    if (next && next !== value('api_base_url')) {
+      const ok = await run(async () => { await save('api_base_url', next); return true; });
+      if (!ok) return;
     }
-    const input = element('input', 'settings-input'); input.id = key;
-    register(key, () => { if (!dirty.has(key) && document.activeElement !== input) input.value = settings[key] || fallback; });
-    input.addEventListener('input', () => dirty.add(key));
-    input.addEventListener('blur', async () => {
-      const value = input.value.trim();
-      if (!value) { dirty.delete(key); sync(key); return; }
-      if (value !== settings[key]) {
-        const result = await run(async () => { await save(key, value); return true; });
-        if (!result) return;
-      }
-      dirty.delete(key); sync(key);
-    });
-    field.append(heading, input);
-    if (key === 'api_base_url') {
-      endpoint.append(field, keySection);
-      field.append(element('p', 'settings-description', 'Include /v1. Used for transcription and cleanup.'));
-    } else panels.api.append(field);
-    if (key === 'llm_model') {
-      settingSwitch(heading, 'cleanup_enabled', 'Text cleanup', undefined, true);
-      field.append(element('p', 'settings-description', 'When disabled, paste the original transcript without an extra model call.'));
-      register('cleanup_enabled', () => { input.disabled = settings.cleanup_enabled === 'false'; });
+    dirty.delete('api_base_url'); sync('api_base_url');
+  });
+  urlField.append(urlHeading, urlInput, presets, element('p', 'settings-description', 'Any OpenAI-compatible base URL, including /v1.'));
+  endpoint.append(urlField, keySection);
+  const connectionStatus = element('p', 'settings-status');
+  connectionStatus.setAttribute('role', 'status');
+  panels.connection.append(connectionStatus);
+  function renderCatalog() {
+    refresh.disabled = catalog.loading || !hasKey;
+    refresh.textContent = catalog.loading ? 'Loading…' : 'Refresh';
+    connectionStatus.textContent = !hasKey ? 'Add an API key to load the available models.'
+      : catalog.loading ? 'Checking the endpoint…'
+        : catalog.error ? `Could not list models: ${catalog.error}`
+          : catalog.loaded ? `Connected: ${catalog.transcription.length} transcription and ${catalog.chat.length} chat models available.` : '';
+    for (const render of catalogViews) render();
+  }
+  function forgetModels() {
+    Object.assign(catalog, { transcription: [], chat: [], loaded: false, loading: false, error: '', generation: catalog.generation + 1 });
+    renderCatalog();
+  }
+  async function loadModels(fresh) {
+    if (!hasKey) return;
+    const mine = ++catalog.generation;
+    catalog.loading = true; catalog.error = ''; renderCatalog();
+    try {
+      const found = await api.invoke('get_models', { refresh: fresh });
+      if (disposed || mine !== catalog.generation) return;
+      catalog.transcription = found?.transcription ?? []; catalog.chat = found?.chat ?? []; catalog.loaded = true;
+      if (fresh) error.hidden = true;
+    } catch (reason) {
+      if (disposed || mine !== catalog.generation) return;
+      catalog.error = reason instanceof Error ? reason.message : String(reason);
+      throw reason;
+    } finally {
+      if (!disposed && mine === catalog.generation) { catalog.loading = false; renderCatalog(); }
     }
   }
-  // Offers only the saved model until Refresh asks the API which models it serves, so
-  // opening the page sends no request and a refresh never switches models by itself.
-  function transcriptionPicker(fallback) {
-    let models = [];
-    let generation = 0;
-    const wrap = element('div', 'settings-actions settings-model-picker');
-    const select = element('select', 'settings-input'); select.id = 'transcription_model';
-    const refresh = button('Refresh', async () => {
-      const mine = ++generation;
-      refresh.disabled = true; refresh.textContent = 'Loading…';
-      try {
-        const found = await api.invoke('get_transcription_models');
-        if (disposed || mine !== generation) return;
-        models = found;
-        if (!models.length) report('This API advertises no transcription models.');
-        else error.hidden = true;
-        render();
-      } finally {
-        if (!disposed && mine === generation) { refresh.disabled = false; refresh.textContent = 'Refresh'; }
-      }
-    });
-    refresh.setAttribute('aria-label', 'Refresh transcription models');
-    function render() {
-      const saved = settings.transcription_model || fallback;
-      const options = models.includes(saved) ? models : [saved, ...models];
-      select.replaceChildren(...options.map((id) => {
-        const option = element('option', '', models.length && !models.includes(id) ? `${id} (not advertised)` : id);
-        option.value = id;
-        return option;
-      }));
-      select.value = saved;
-    }
-    select.addEventListener('change', () => { void run(() => save('transcription_model', select.value)).then((ok) => { if (ok === false) render(); }); });
-    register('transcription_model', render);
-    register('api_base_url', () => { generation++; models = []; refresh.disabled = false; refresh.textContent = 'Refresh'; render(); });
-    wrap.append(select, refresh);
-    return wrap;
-  }
+  // Set once settings have loaded, so only later endpoint changes reload the models.
+  let knownEndpoint = null;
+  register('api_base_url', () => {
+    if (knownEndpoint === null || knownEndpoint === value('api_base_url')) return;
+    knownEndpoint = value('api_base_url');
+    forgetModels(); void run(() => loadModels(false));
+  });
   function renderKeyEditor(edit = !hasKey) {
     const heading = element('div', 'settings-field-heading');
-    const label = element('label', 'settings-label', 'API Key'); label.htmlFor = 'api_key';
+    const label = element('label', 'settings-label', 'API key'); label.htmlFor = 'api_key';
     heading.append(label);
     keySection.replaceChildren(heading);
     const input = element('input', 'settings-input');
     input.id = 'api_key';
-    input.setAttribute('aria-label', 'API Key'); input.autocomplete = 'off';
+    input.setAttribute('aria-label', 'API key'); input.autocomplete = 'off';
     const actions = element('div', 'settings-actions');
     keySection.append(input, actions);
     if (edit) {
-      input.type = 'password'; input.placeholder = 'Enter API key';
-      const saveButton = button('Save Key', async () => {
+      input.type = 'password'; input.placeholder = 'Paste your API key';
+      const saveButton = button('Save key', async () => {
         if (!input.value.trim()) return;
         saveButton.disabled = true;
         try {
@@ -346,26 +406,26 @@ export async function mountSettings(root, api = platform) {
           hasKey = true;
           keyHint = '';
           await run(async () => { keyHint = await api.invoke('get_api_key_hint'); });
-          if (!disposed) { renderKeyEditor(); updateKeyBadge(); }
+          if (!disposed) { renderKeyEditor(); updateKeyBadge(); forgetModels(); void run(() => loadModels(false)); }
         } finally { saveButton.disabled = false; }
       }, 'settings-button settings-button-primary');
       actions.append(saveButton);
       if (hasKey) actions.append(button('Cancel', () => renderKeyEditor(false)));
-      keySection.append(element('p', 'settings-description', 'Required for transcription and text cleanup.'));
+      keySection.append(element('p', 'settings-description', 'Kept in Windows Credential Manager.'));
     } else {
       input.readOnly = true; input.value = keyHint;
       heading.append(element('span', 'settings-configured', 'Configured'));
-      actions.append(button('Update Key', () => { renderKeyEditor(true); keySection.querySelector('input').focus(); }), button('Remove', () => {
+      actions.append(button('Replace', () => { renderKeyEditor(true); keySection.querySelector('input').focus(); }), button('Remove', () => {
         const dialog = openDialog('Remove API key');
         dialog.body.append(element('p', '', "Are you sure? Dictto won't work without an API key."));
         dialog.footer.append(button('Yes, remove', async () => {
           await api.invoke('remove_api_key');
-          hasKey = false; keyHint = ''; closeDialog(); renderKeyEditor(); updateKeyBadge();
+          hasKey = false; keyHint = ''; closeDialog(); renderKeyEditor(); updateKeyBadge(); forgetModels();
         }, 'settings-button settings-button-danger'));
       }, 'settings-button settings-button-danger'));
     }
   }
-  function updateKeyBadge() { tabButtons.api.textContent = hasKey ? 'API' : 'API !'; }
+  function updateKeyBadge() { tabButtons.connection.textContent = hasKey ? 'Connection' : 'Connection !'; }
   function closeDialog() {
     if (!modal) return;
     const previous = modal;
@@ -397,9 +457,9 @@ export async function mountSettings(root, api = platform) {
     card.focus(); return modal;
   }
   function openLanguages() {
-    const dialog = openDialog('Languages', 'languages');
+    const dialog = openDialog('Spoken languages', 'languages');
     let draft = languages().filter((code) => LANGUAGES.some((language) => language.code === code));
-    const auto = switchInput('Auto-detect languages'); auto.checked = languages().includes('auto');
+    const auto = switchInput('Auto-detect languages'); auto.checked = !draft.length || languages().includes('auto');
     const autoLabel = element('label', 'settings-auto-language', 'Auto-detect'); autoLabel.append(auto);
     const search = element('input', 'settings-input'); search.type = 'search'; search.placeholder = 'Search for any language...'; search.setAttribute('aria-label', 'Search languages');
     const layout = element('div', 'settings-language-layout');
@@ -431,50 +491,27 @@ export async function mountSettings(root, api = platform) {
     }
     auto.addEventListener('change', update); search.addEventListener('input', update); update(); search.focus();
   }
-  async function openMicrophones() {
-    const dialog = openDialog('Select microphone', 'microphones');
-    dialog.body.textContent = 'Loading microphones…';
-    await refreshDevices(dialog);
-  }
-  async function refreshDevices(dialog) {
-    const list = await api.invoke('list_microphones');
-    if (!Array.isArray(list) || !list.every((device) => device && typeof device.name === 'string' && typeof device.id === 'string')) throw new Error('Unable to read microphone list. Try again.');
-    if (disposed || modal !== dialog) return;
-    const selected = settings.microphone_device || 'auto-detect';
-    if (selected !== 'auto-detect' && !list.some((device) => device.name === selected)) await save('microphone_device', 'auto-detect');
-    if (disposed || modal !== dialog) return;
-    dialog.body.replaceChildren();
-    const defaultName = list.find((device) => device.is_default)?.name.replace(/\s*\([^)]*\)\s*$/, '');
-    for (const device of [{ name: `Auto-detect${defaultName ? ` (${defaultName})` : ''}`, value: 'auto-detect', form_factor: 'Follows the system default device' }, ...list.map((device) => ({ ...device, value: device.name }))]) {
-      const card = button('', async () => { await save('microphone_device', device.value); closeDialog(); }, 'settings-device-card');
-      card.append(element('span', '', device.name), element('small', 'settings-description', device.form_factor || ''));
-      card.setAttribute('aria-pressed', String((settings.microphone_device || 'auto-detect') === device.value));
-      dialog.body.append(card);
-    }
-    if (!list.length) dialog.body.append(element('p', 'settings-description', 'No microphones found'));
-  }
-  selectTab('general'); renderKeyEditor();
+  selectTab('general'); renderKeyEditor(); renderCatalog();
   void run(() => subscribe(api.listen('setting-changed', ({ payload }) => {
     if (disposed || !payload || typeof payload.key !== 'string') return;
     settings[payload.key] = payload.value; sync(payload.key);
   })));
   void run(() => subscribe(api.listen('audio-devices-changed', () => {
     clearTimeout(deviceTimer);
-    deviceTimer = setTimeout(() => {
-      void run(refreshCurrentMic);
-      if (modal?.kind === 'microphones') void run(() => refreshDevices(modal));
-    }, 200);
+    deviceTimer = setTimeout(() => { void run(refreshDevices); }, 200);
   })));
   await run(async () => {
     settings = await api.invoke('get_all_settings');
     if (disposed) return;
     for (const key of syncers.keys()) sync(key);
+    knownEndpoint = value('api_base_url');
     hasKey = await api.invoke('has_api_key');
     if (hasKey) keyHint = await api.invoke('get_api_key_hint');
     if (disposed) return;
-    renderKeyEditor(); updateKeyBadge(); if (!hasKey) selectTab('api');
+    renderKeyEditor(); updateKeyBadge(); renderCatalog(); if (!hasKey) selectTab('connection');
   });
-  void run(refreshCurrentMic);
+  void run(refreshDevices);
+  void run(() => loadModels(false));
   return async () => {
     disposed = true; clearTimeout(deviceTimer); closeDialog();
     window.removeEventListener('blur', onWindowBlur);

@@ -25,8 +25,8 @@ async function previewInvoke(command, args = {}) {
       return;
     case "has_api_key": return true;
     case "get_api_key_hint": return "Preview only";
-    case "get_transcription_models": return ["canary-1b-v2", "whisper-1"];
-    case "list_microphones": return [];
+    case "get_models": return { transcription: ["canary-1b-v2", "whisper-1"], chat: ["gpt-4.1-nano", "text-light"] };
+    case "list_microphones": return [{ id: "desk", name: "Desk microphone", is_default: true }];
     case "get_current_microphone": return "System default";
     default: return null;
   }

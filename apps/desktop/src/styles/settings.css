@@ -223,10 +223,6 @@
   cursor: default;
 }
 
-.settings-coming-soon {
-  opacity: .35;
-}
-
 .settings-capture {
   margin-top: -12px;
   margin-bottom: 24px;
@@ -255,15 +251,26 @@
   gap: 20px;
 }
 
-#settings-panel-api {
+#settings-panel-connection {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-#settings-panel-api .settings-field {
+#settings-panel-connection .settings-field {
   min-width: 0;
   margin: 0;
+}
+
+.settings-status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.settings-actions .settings-select {
+  width: 260px;
+  max-width: 45vw;
 }
 
 .settings-field-heading {
@@ -413,7 +420,7 @@
   cursor: pointer;
 }
 
-.settings-language-card[aria-pressed=true],.settings-device-card[aria-pressed=true] {
+.settings-language-card[aria-pressed=true] {
   border-color: var(--color-border-strong);
   background: var(--color-surface-elevated);
 }
@@ -429,22 +436,6 @@
   color: var(--color-text-secondary);
   text-transform: uppercase;
   margin-top: 0;
-}
-
-.settings-device-card {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  width: 100%;
-  text-align: left;
-  padding: 13px;
-  margin-bottom: 8px;
-  border: 1px solid var(--color-border);
-  border-radius: 5px;
-  background: var(--color-surface);
-  color: var(--color-text);
-  font: inherit;
-  cursor: pointer;
 }
 
 .settings-shell [hidden],.settings-backdrop [hidden] {
@@ -513,4 +504,10 @@
 .settings-model-picker .settings-input {
   flex: 1;
   min-width: 0;
+}
+
+.settings-model-picker .settings-select {
+  flex: 1;
+  width: auto;
+  max-width: none;
 }
