@@ -381,8 +381,15 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         let pipeline_app = app_handle.clone();
         host::async_runtime::spawn(async move {
             while let Some(mut audio) = pipeline_rx.recv().await {
-                // Never retried on its own: a late paste would land wherever the cursor is by then.
-                let result = crate::pipeline::run_pipeline(&pipeline_app, &mut audio).await;
+                let mut result = crate::pipeline::run_pipeline(&pipeline_app, &mut audio).await;
+                // One quick second attempt rides out a busy worker while the user is still
+                // waiting; longer retries are left to a tap, since a late paste would land
+                // wherever the cursor is by then.
+                if let Err(error @ crate::pipeline::PipelineError::TranscriptionFailed(_)) = &result {
+                    log::warn!("[hotkey] {}; trying once more", error);
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    result = crate::pipeline::run_pipeline(&pipeline_app, &mut audio).await;
+                }
                 let failed = crate::pipeline::retryable_audio(audio, &result);
                 if let Err(error) = &result {
                     log::error!("[hotkey] Pipeline error: {}", error);
