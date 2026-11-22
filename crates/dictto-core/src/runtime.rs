@@ -4,6 +4,7 @@ use crate::events;
 use crate::audio::MicrophoneInfo;
 use crate::host::{self, AppHandle, Emitter};
 use crate::platform::Platform;
+use crate::transcription::catalog::ModelCatalog;
 #[cfg(feature = "speech")]
 use crate::speech::{MicRouteControl, SpeechPlatform, SpeechState};
 use crate::CoreState;
@@ -25,6 +26,9 @@ struct RuntimeState {
     started: AtomicBool,
     // The OS input hook cannot be removed, so a retried start must not install it twice.
     input_installed: AtomicBool,
+    // Kept until a refresh or a new endpoint or key. The epoch lets a reply that started
+    // before the endpoint changed be dropped instead of cached.
+    models: Mutex<(u64, Option<ModelCatalog>)>,
 }
 impl Runtime {
     pub fn new(
@@ -95,6 +99,7 @@ impl Runtime {
                 app,
                 started: AtomicBool::new(false),
                 input_installed: AtomicBool::new(false),
+                models: Mutex::new((0, None)),
             }),
         })
     }
@@ -200,6 +205,9 @@ impl Runtime {
                 None
             };
             db.set_setting(key, value).map_err(|e| e.to_string())?;
+            if key == "api_base_url" {
+                self.forget_models();
+            }
             #[cfg(feature = "speech")]
             if let Some(bindings) = bindings {
                 crate::speech::configure(bindings);
@@ -222,22 +230,41 @@ impl Runtime {
             )
             .map_err(|e| e.to_string())
     }
-    /// Transcription model IDs advertised by the configured endpoint.
-    pub async fn transcription_models(&self) -> Result<Vec<String>, String> {
+    /// Models the configured endpoint advertises, from the cache unless `refresh`.
+    pub async fn models(&self, refresh: bool) -> Result<ModelCatalog, String> {
+        let epoch = {
+            let cache = self.inner.models.lock().map_err(|e| e.to_string())?;
+            match &cache.1 {
+                Some(models) if !refresh => return Ok(models.clone()),
+                _ => cache.0,
+            }
+        };
         let base = self.get_settings()?.remove("api_base_url").ok_or("Set an API base URL first")?;
         let key = crate::db::keystore::get_api_key()?;
-        crate::transcription::catalog::discover(&self.inner.core.http_client, &base, &key).await
+        let models = crate::transcription::catalog::discover(&self.inner.core.http_client, &base, &key).await?;
+        let mut cache = self.inner.models.lock().map_err(|e| e.to_string())?;
+        if cache.0 == epoch {
+            cache.1 = Some(models.clone());
+        }
+        Ok(models)
     }
-    /// `transcription_models` for hosts without an async caller; answers with
-    /// `TRANSCRIPTION_CATALOG` so a stale reply can be told apart by its generation.
-    pub fn discover_transcription_models(&self, generation: u64) {
+    fn forget_models(&self) {
+        if let Ok(mut cache) = self.inner.models.lock() {
+            *cache = (cache.0 + 1, None);
+        }
+    }
+    /// `models` for hosts without an async caller; answers with `MODEL_CATALOG` so a stale
+    /// reply can be told apart by its generation.
+    pub fn discover_models(&self, generation: u64, refresh: bool) {
         let runtime = self.clone();
         host::async_runtime::spawn(async move {
-            let payload = match runtime.transcription_models().await {
-                Ok(models) => serde_json::json!({"generation": generation, "models": models}),
+            let payload = match runtime.models(refresh).await {
+                Ok(models) => serde_json::json!({
+                    "generation": generation, "transcription": models.transcription, "chat": models.chat
+                }),
                 Err(error) => serde_json::json!({"generation": generation, "error": error}),
             };
-            let _ = runtime.inner.app.emit(events::TRANSCRIPTION_CATALOG, payload);
+            let _ = runtime.inner.app.emit(events::MODEL_CATALOG, payload);
         });
     }
     #[cfg(feature = "speech")]
@@ -280,9 +307,11 @@ impl Runtime {
         })
     }
     pub fn save_key(&self, value: &str) -> Result<(), String> {
+        self.forget_models();
         crate::db::keystore::set_api_key(value)
     }
     pub fn remove_key(&self) -> Result<(), String> {
+        self.forget_models();
         crate::db::keystore::delete_api_key()
     }
     pub fn microphones(&self) -> Result<Vec<MicrophoneInfo>, String> {

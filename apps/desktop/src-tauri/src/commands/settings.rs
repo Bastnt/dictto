@@ -18,8 +18,8 @@ pub fn get_all_settings(runtime: State<'_, Runtime>) -> Result<HashMap<String, S
 }
 
 #[tauri::command]
-pub fn set_api_key(api_key: String) -> Result<(), String> {
-    dictto_core::db::keystore::set_api_key(&api_key).map_err(|e| e.to_string())
+pub fn set_api_key(api_key: String, runtime: State<'_, Runtime>) -> Result<(), String> {
+    runtime.save_key(&api_key)
 }
 
 #[tauri::command]
@@ -28,8 +28,8 @@ pub fn has_api_key() -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn remove_api_key() -> Result<(), String> {
-    dictto_core::db::keystore::delete_api_key().map_err(|e| e.to_string())
+pub fn remove_api_key(runtime: State<'_, Runtime>) -> Result<(), String> {
+    runtime.remove_key()
 }
 
 #[tauri::command]
@@ -44,6 +44,9 @@ pub fn get_api_key_hint() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn get_transcription_models(runtime: State<'_, Runtime>) -> Result<Vec<String>, String> {
-    runtime.transcription_models().await
+pub async fn get_models(
+    refresh: bool,
+    runtime: State<'_, Runtime>,
+) -> Result<dictto_core::transcription::catalog::ModelCatalog, String> {
+    runtime.models(refresh).await
 }
