@@ -12,10 +12,10 @@ const fn windows(ms: usize) -> usize {
 }
 
 /// Below this much speech a chunk is never cut, whatever the pause.
-const MIN_SPEECH: usize = windows(8_000);
+const MIN_SPEECH: usize = windows(6_000);
 /// Pause needed to cut at `MIN_SPEECH`, shrinking linearly to `SHORTEST_PAUSE` at `FULL_SPEECH`.
-const LONGEST_PAUSE: usize = windows(1_200);
-const SHORTEST_PAUSE: usize = windows(300);
+const LONGEST_PAUSE: usize = windows(4_000);
+const SHORTEST_PAUSE: usize = windows(600);
 const FULL_SPEECH: usize = windows(30_000);
 /// Continuous speech or noise is cut here regardless, to bound one request.
 const MAX_CHUNK: usize = windows(60_000);
@@ -190,8 +190,8 @@ mod tests {
     #[test]
     fn enough_speech_is_cut_at_a_long_pause_but_not_a_short_one() {
         let mut segmenter = Segmenter::new();
-        assert!(feed(&mut segmenter, &[tone(9_000), silence(600), tone(500)]).is_empty());
-        let chunks = feed(&mut segmenter, &[silence(1_200)]);
+        assert!(feed(&mut segmenter, &[tone(9_000), silence(3_000), tone(500)]).is_empty());
+        let chunks = feed(&mut segmenter, &[silence(3_600)]);
         assert_eq!(chunks.len(), 1);
         assert_eq!(ms(&chunks[0]), 9_000 + 2 * PAD_MS + 500 + PAD_MS);
         assert!(segmenter.finish().is_none());
@@ -200,12 +200,13 @@ mod tests {
     #[test]
     fn longer_speech_accepts_a_shorter_pause() {
         let mut segmenter = Segmenter::new();
-        let chunks = feed(&mut segmenter, &[tone(31_000), silence(320)]);
+        let chunks = feed(&mut segmenter, &[tone(31_000), silence(620)]);
         assert_eq!(chunks.len(), 1);
-        assert_eq!(required_pause(windows(9_000)), Some(windows(1_160)));
+        assert_eq!(required_pause(windows(6_000)), Some(windows(4_000)));
+        assert_eq!(required_pause(windows(9_000)), Some(windows(3_580)));
         assert!(required_pause(windows(20_000)) < required_pause(windows(10_000)));
         assert_eq!(required_pause(windows(40_000)), Some(SHORTEST_PAUSE));
-        assert_eq!(required_pause(windows(7_000)), None);
+        assert_eq!(required_pause(windows(5_980)), None);
     }
 
     #[test]

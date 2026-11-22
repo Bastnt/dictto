@@ -291,7 +291,7 @@ async fn live_transcript_sends_each_chunk_with_the_text_before_it() {
     let tone = |ms: usize| -> Vec<i16> { (0..ms * 16).map(|i| ((i as f64 * 0.2).sin() * 3000.0) as i16).collect() };
     let live = tokio::spawn(super::live::run_with_key(settings, "key".into(), samples));
     // Enough speech then a long pause cuts the first chunk before the recording ends.
-    for part in [tone(9_000), vec![0; 16 * 1_300], tone(2_000)] {
+    for part in [tone(9_000), vec![0; 16 * 3_700], tone(2_000)] {
         for packet in part.chunks(480) {
             samples_tx.send(packet.to_vec()).unwrap();
         }
