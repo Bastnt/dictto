@@ -1,4 +1,5 @@
 pub mod dsp;
+pub mod segmenter;
 
 use crate::events;
 use crate::host::{AppHandle, Emitter};
