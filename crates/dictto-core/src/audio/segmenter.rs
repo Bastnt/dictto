@@ -1,10 +1,10 @@
 //! Cuts a live 16 kHz mono capture into chunks at pauses so each chunk can be transcribed
 //! while the user keeps speaking, and squeezes long silences out of every chunk.
 //!
-//! A chunk is only cut once it holds enough audio to give the model context, and the
-//! pause needed to cut shrinks as that audio grows: a short phrase waits through any
-//! pause, a long monologue is cut at the next breath. Audio is counted up to the pause,
-//! silences included, so a chunk's length is what the user perceives as elapsed time.
+//! A chunk is only cut once enough has been recorded, and the pause needed to cut shrinks
+//! as the recording grows: a short phrase waits through a pause, a long monologue is cut
+//! at the next breath. Every window counts, speech or silence, the pause itself included,
+//! so a chunk's length is the elapsed recording time.
 use super::dsp::{SAMPLE_RATE, SILENCE_RMS_THRESHOLD};
 
 const WINDOW: usize = SAMPLE_RATE as usize / 50;
@@ -12,7 +12,7 @@ const fn windows(ms: usize) -> usize {
     ms / 20
 }
 
-/// Below this much audio before the pause a chunk is never cut, whatever the pause.
+/// Below this much recording a chunk is never cut, whatever the pause.
 const MIN_AUDIO: usize = windows(6_000);
 /// Pause needed to cut at `MIN_AUDIO`, shrinking linearly to `SHORTEST_PAUSE` at `FULL_AUDIO`.
 const LONGEST_PAUSE: usize = windows(4_000);
@@ -94,8 +94,7 @@ impl Segmenter {
         } else {
             self.trailing_silence += 1;
         }
-        let before_pause = self.levels.len() - self.trailing_silence;
-        let paused = required_pause(before_pause).is_some_and(|pause| self.trailing_silence >= pause);
+        let paused = required_pause(self.levels.len()).is_some_and(|pause| self.trailing_silence >= pause);
         if paused || self.levels.len() >= MAX_CHUNK {
             return self.cut();
         }
@@ -176,13 +175,22 @@ mod tests {
     }
 
     #[test]
-    fn short_speech_waits_through_a_long_pause() {
+    fn a_short_recording_waits_through_a_long_pause() {
         let mut segmenter = Segmenter::new();
-        let chunks = feed(&mut segmenter, &[tone(1_000), silence(5_000), tone(1_000)]);
+        let chunks = feed(&mut segmenter, &[tone(1_000), silence(4_000), tone(1_000)]);
         assert!(chunks.is_empty());
         let last = segmenter.finish().unwrap();
-        // Both phrases, the 5 s pause squeezed to two pads.
+        // Both phrases, the 4 s pause squeezed to two pads.
         assert_eq!(ms(&last), 1_000 + 2 * PAD_MS + 1_000);
+    }
+
+    #[test]
+    fn the_pause_itself_counts_toward_the_recording_needed_to_cut() {
+        let mut segmenter = Segmenter::new();
+        // 1 s of speech then silence: cut once 6 s are recorded, the pause being 5 s by then.
+        let chunks = feed(&mut segmenter, &[tone(1_000), silence(5_000)]);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(ms(&chunks[0]), 1_000 + PAD_MS);
     }
 
     #[test]
@@ -198,7 +206,7 @@ mod tests {
     #[test]
     fn pauses_count_toward_the_audio_needed_to_cut() {
         let mut segmenter = Segmenter::new();
-        // Only 4 s of speech, but 7 s of audio once the first pause is counted.
+        // Only 4 s of speech, but 7 s of recording once the first pause is counted.
         assert!(feed(&mut segmenter, &[tone(2_000), silence(3_000), tone(2_000)]).is_empty());
         let chunks = feed(&mut segmenter, &[silence(4_000)]);
         assert_eq!(chunks.len(), 1);
@@ -240,7 +248,7 @@ mod tests {
     #[test]
     fn background_noise_between_phrases_is_squeezed() {
         let mut segmenter = Segmenter::new();
-        assert!(feed(&mut segmenter, &[noise(40), tone(1_000), noise(5_000), tone(1_000)]).is_empty());
+        assert!(feed(&mut segmenter, &[noise(40), tone(1_000), noise(4_000), tone(1_000)]).is_empty());
         assert_eq!(ms(&segmenter.finish().unwrap()), 40 + 1_000 + 2 * PAD_MS + 1_000);
     }
 
