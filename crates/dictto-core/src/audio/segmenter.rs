@@ -226,6 +226,15 @@ mod tests {
     }
 
     #[test]
+    fn the_shortest_pause_is_reached_after_30_s_of_recording_not_of_speech() {
+        let mut segmenter = Segmenter::new();
+        // 30 s recorded, only 20 s of it speech, with pauses too short to cut.
+        let breaths: Vec<Vec<i16>> = (0..20).flat_map(|_| [tone(1_000), silence(500)]).collect();
+        assert!(feed(&mut segmenter, &breaths).is_empty());
+        assert_eq!(feed(&mut segmenter, &[silence(120)]).len(), 1);
+    }
+
+    #[test]
     fn unbroken_speech_is_cut_at_the_cap() {
         let mut segmenter = Segmenter::new();
         let chunks = feed(&mut segmenter, &[tone(70_000)]);
