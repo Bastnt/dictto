@@ -35,7 +35,13 @@ install -Dm755 target/release/dictto-gnome-settings "$bin_dir/dictto-gnome-setti
 )
 
 mkdir -p "$data_dir/applications"
-sed "s|@BIN@|$bin_dir|" "$pkg/com.dictto.App.desktop" >"$data_dir/applications/com.dictto.App.desktop"
+desktop="$data_dir/applications/com.dictto.Settings.desktop"
+sed "s|@BIN@|$bin_dir|" "$pkg/com.dictto.Settings.desktop" >"$desktop"
+# Remove the old launcher only if it still matches the previous installer output.
+legacy_desktop="$data_dir/applications/com.dictto.App.desktop"
+if cmp -s "$legacy_desktop" <(sed 's/^StartupWMClass=com\.dictto\.Settings$/StartupWMClass=com.dictto.App/' "$desktop"); then
+  rm -- "$legacy_desktop"
+fi
 install -Dm644 "$pkg/com.dictto.App.png" "$data_dir/icons/hicolor/512x512/apps/com.dictto.App.png"
 update-desktop-database "$data_dir/applications" 2>/dev/null || true
 gtk-update-icon-cache -q -t "$data_dir/icons/hicolor" 2>/dev/null || true

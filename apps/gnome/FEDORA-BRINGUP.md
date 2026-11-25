@@ -50,6 +50,8 @@ For development builds: `cargo build -p dictto-gnome -p dictto-gnome-settings` a
 - The installer added the user to the `input` group and set `/dev/uinput` to mode `0660` with group `input`. The first GNOME relogin discovered the extension, but its surviving user manager and the new Shell still had the old groups.
 - GNOME Shell 51 rejected the overlay's `affectsInputRegion` chrome argument. The extension no longer passes it, and the corrected module is installed. Loading it in a fresh Shell is pending.
 - The real daemon registered `com.dictto.App`, connected to PipeWire, followed the active logind session and opened Settings. D-Bus reported the keyboard permission failure while the user manager lacked the group. Hotkeys, dictation, paste and the rest of the live checklist are pending.
+- While Dictto was idle, PipeWire showed the built-in microphone as the default and no capture streams. After D-Bus `Quit`, the Dictto virtual source disappeared and the built-in microphone remained the default.
+- The Settings launcher now matches the GTK application ID (`com.dictto.Settings`). The installed desktop entry resolves to the Dictto name and icon. Visual confirmation in Alt+Tab is pending.
 
 ## Checklist (in this order)
 

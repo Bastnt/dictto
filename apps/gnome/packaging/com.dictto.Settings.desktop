@@ -6,4 +6,4 @@ Exec=@BIN@/dictto-gnome --settings
 Icon=com.dictto.App
 Terminal=false
 Categories=Utility;AudioVideo;
-StartupWMClass=com.dictto.App
+StartupWMClass=com.dictto.Settings
