@@ -1,14 +1,14 @@
-//! The settings window: the Windows pages General, Audio, API, Speech and Shortcuts, each
-//! control saving through the daemon. Unsaved edits are dropped with the window, and the
-//! process exits when it closes.
-mod api;
-mod audio;
+//! The settings window: the Windows tabs General, Dictation, Voice, Shortcuts and
+//! Connection. Every control saves through the daemon as it changes; typed text saves when
+//! Enter is pressed or focus leaves, and on close. The process exits when the window closes.
+mod connection;
+mod dictation;
 mod general;
 mod shortcuts;
-mod speech;
+mod voice;
 
 use crate::bus::{Client, Incoming};
-use crate::form::{self, Backend, Catalog, Settings};
+use crate::form::{self, Backend, Catalog, Choices, Models, Settings};
 use adw::prelude::*;
 use dictto_core::events;
 use gtk::{gio, glib};
@@ -16,6 +16,7 @@ use serde_json::Value;
 use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -24,7 +25,10 @@ const APP_ID: &str = "com.dictto.Settings";
 const STARTING: &str = "Dictto is still starting";
 const PREVIEW: &str = "Preview: recording services disabled";
 const NOT_RUNNING: &str = "Dictto is not running";
-const PAGES: [&str; 5] = ["general", "audio", "api", "speech", "shortcuts"];
+const PAGES: [&str; 5] = ["general", "dictation", "voice", "shortcuts", "connection"];
+
+/// A save of typed text still in its field, run before the window closes.
+type Pending = Option<Pin<Box<dyn Future<Output = ()>>>>;
 
 pub(crate) fn run() -> glib::ExitCode {
     let mut args = std::env::args().skip(1);
@@ -65,11 +69,12 @@ pub(super) struct Ui {
     client: RefCell<Option<Client>>,
     /// Last values read from or saved through the daemon.
     settings: RefCell<Settings>,
-    /// Unsaved per-model Speech texts, kept while switching models.
+    /// Unsaved per-model Voice texts, kept while switching models.
     drafts: RefCell<Settings>,
     catalog: RefCell<Catalog>,
-    /// `microphone_device` value of each microphone list entry.
-    microphones: RefCell<Vec<String>>,
+    models: RefCell<Models>,
+    microphones: RefCell<Vec<form::Microphone>>,
+    has_key: Cell<bool>,
     preview: Cell<bool>,
     field_focus: Cell<bool>,
     /// Set while widgets are filled from settings, so their change handlers stay quiet.
@@ -77,25 +82,32 @@ pub(super) struct Ui {
     first_presence: Cell<bool>,
     /// Counts daemon arrivals and departures; a `load` started for an earlier one stops.
     presence: Cell<u64>,
+    /// Typed values are being saved before the window closes.
+    closing: Cell<bool>,
     screenshots: Option<PathBuf>,
     general: general::Page,
-    audio: audio::Page,
-    api: api::Page,
-    speech: speech::Page,
+    dictation: dictation::Page,
+    voice: voice::Page,
     shortcuts: shortcuts::Page,
+    connection: connection::Page,
 }
 
 impl Ui {
     fn build(app: &adw::Application, screenshots: Option<PathBuf>) {
-        let (general, audio, api, speech, shortcuts) =
-            (general::Page::new(), audio::Page::new(), api::Page::new(), speech::Page::new(), shortcuts::Page::new());
+        let (general, dictation, voice, shortcuts, connection) = (
+            general::Page::new(),
+            dictation::Page::new(),
+            voice::Page::new(),
+            shortcuts::Page::new(),
+            connection::Page::new(),
+        );
         let stack = adw::ViewStack::new();
         let pages: [(&adw::PreferencesPage, &str, &str); 5] = [
             (&general.page, "General", "preferences-system-symbolic"),
-            (&audio.page, "Audio", "audio-input-microphone-symbolic"),
-            (&api.page, "API", "network-server-symbolic"),
-            (&speech.page, "Speech", "audio-speakers-symbolic"),
+            (&dictation.page, "Dictation", "audio-input-microphone-symbolic"),
+            (&voice.page, "Voice", "audio-speakers-symbolic"),
             (&shortcuts.page, "Shortcuts", "preferences-desktop-keyboard-shortcuts-symbolic"),
+            (&connection.page, "Connection", "network-server-symbolic"),
         ];
         for ((page, title, icon), name) in pages.into_iter().zip(PAGES) {
             stack.add_titled_with_icon(page, Some(name), title, icon);
@@ -134,7 +146,7 @@ impl Ui {
             .application(app)
             .title("Dictto Settings")
             .default_width(820)
-            .default_height(700)
+            .default_height(640)
             .content(&toolbar)
             .build();
         let ui = Rc::new(Ui {
@@ -150,24 +162,27 @@ impl Ui {
             settings: RefCell::default(),
             drafts: RefCell::default(),
             catalog: RefCell::default(),
+            models: RefCell::default(),
             microphones: RefCell::default(),
+            has_key: Cell::new(false),
             preview: Cell::new(false),
             field_focus: Cell::new(false),
             updating: Cell::new(false),
             first_presence: Cell::new(true),
             presence: Cell::new(0),
+            closing: Cell::new(false),
             screenshots,
             general,
-            audio,
-            api,
-            speech,
+            dictation,
+            voice,
             shortcuts,
+            connection,
         });
         general::connect(&ui);
-        audio::connect(&ui);
-        api::connect(&ui);
-        speech::connect(&ui);
+        dictation::connect(&ui);
+        voice::connect(&ui);
         shortcuts::connect(&ui);
+        connection::connect(&ui);
         ui.connect_window();
         ui.window.present();
         spawn(ui.clone().follow_daemon());
@@ -177,18 +192,24 @@ impl Ui {
         let ui = self.clone();
         self.window.connect_is_active_notify(move |_| ui.update_capture());
         let ui = self.clone();
-        self.window.connect_close_request(move |_| {
-            // The daemon also drops capture when this process leaves the bus.
-            if let Some(client) = ui.client() {
-                client.release_capture();
+        self.window.connect_close_request(move |window| {
+            if ui.closing.replace(true) {
+                // The daemon also drops capture when this process leaves the bus.
+                if let Some(client) = ui.client() {
+                    client.release_capture();
+                }
+                return glib::Propagation::Proceed;
             }
-            glib::Propagation::Proceed
-        });
-        let ui = self.clone();
-        self.stack.connect_visible_child_name_notify(move |stack| {
-            if stack.visible_child_name().as_deref() == Some("speech") {
-                speech::shown(&ui);
-            }
+            // Focus does not leave a field when the window closes, so its text saves here.
+            let saves = [connection::pending(&ui), voice::pending(&ui)];
+            let window = window.clone();
+            spawn(async move {
+                for save in saves.into_iter().flatten() {
+                    save.await;
+                }
+                window.close();
+            });
+            glib::Propagation::Stop
         });
         let ui = self.clone();
         self.start.connect_clicked(move |_| ui.start_daemon());
@@ -239,6 +260,72 @@ impl Ui {
         }
     }
 
+    fn set_has_key(&self, has_key: bool) {
+        self.has_key.set(has_key);
+        // Windows marks the tab "Connection (!)".
+        self.stack.page(&self.connection.page).set_needs_attention(!has_key);
+    }
+
+    /// Asks the endpoint for its models once per endpoint and key; the lists then stay
+    /// until Refresh. A preview daemon reaches no endpoint, as on Windows.
+    fn autoload(self: &Rc<Self>) {
+        if self.preview.get() || !self.has_key.get() {
+            return;
+        }
+        let idle = {
+            let models = self.models.borrow();
+            !models.loaded && !models.loading
+        };
+        if idle {
+            self.load_models(false);
+        }
+        let empty = {
+            let catalog = self.catalog.borrow();
+            catalog.models.is_empty() && !catalog.loading
+        };
+        if empty {
+            voice::refresh(self);
+        }
+    }
+
+    fn load_models(self: &Rc<Self>, refresh: bool) {
+        let generation = self.models.borrow_mut().begin();
+        self.show_models();
+        let ui = self.clone();
+        spawn(async move {
+            let Some(client) = ui.client() else { return };
+            if let Err(error) = client.discover_models(generation, refresh).await {
+                ui.receive_models(&serde_json::json!({"generation": generation, "error": error}));
+            }
+        });
+    }
+
+    fn receive_models(&self, payload: &Value) {
+        if !self.models.borrow_mut().receive(payload) {
+            return;
+        }
+        let status = match payload["error"].as_str() {
+            Some(error) => format!("Models: {error}"),
+            None => self.models.borrow().status(self.has_key.get()),
+        };
+        self.set_status(&status);
+        self.show_models();
+    }
+
+    fn show_models(&self) {
+        dictation::fill(self);
+        connection::show_status(self);
+    }
+
+    /// Lists that belong to the previous endpoint or key.
+    fn forget_catalogs(self: &Rc<Self>) {
+        self.models.borrow_mut().forget();
+        self.catalog.borrow_mut().invalidate();
+        self.show_models();
+        voice::render(self);
+        self.autoload();
+    }
+
     async fn follow_daemon(self: Rc<Self>) {
         let (client, mut incoming) = match Client::connect().await {
             Ok(connected) => connected,
@@ -281,7 +368,7 @@ impl Ui {
     }
 
     async fn load(self: Rc<Self>, presence: u64) {
-        self.first_presence.set(false);
+        let first = self.first_presence.replace(false);
         let Some(client) = self.client() else { return };
         let current = || self.presence.get() == presence;
         let mut settings = client.get_settings().await;
@@ -306,6 +393,7 @@ impl Ui {
             }
         }
         self.drafts.borrow_mut().clear();
+        self.models.borrow_mut().forget();
         self.catalog.borrow_mut().invalidate();
         let status = client.status().await.unwrap_or_default();
         if !current() {
@@ -315,22 +403,23 @@ impl Ui {
         if !status.is_empty() && status != "ok" {
             self.set_status(&status);
         }
-        general::fill(&self);
-        audio::fill(&self);
-        api::fill(&self);
-        speech::render(&self);
-        shortcuts::fill(&self);
-        api::refresh_hint(&self).await;
-        audio::refresh_microphones(&self).await;
+        connection::refresh_hint(&self).await;
+        general::refresh_microphones(&self).await;
         if !current() {
             return;
+        }
+        general::fill(&self);
+        dictation::fill(&self);
+        voice::render(&self);
+        shortcuts::fill(&self);
+        connection::fill(&self);
+        if first {
+            self.stack.set_visible_child_name(if self.has_key.get() { "general" } else { "connection" });
         }
         self.root.set_visible_child_name("settings");
         self.switcher.set_visible(true);
         self.update_capture();
-        if self.stack.visible_child_name().as_deref() == Some("speech") {
-            speech::shown(&self);
-        }
+        self.autoload();
         if let Some(dir) = self.screenshots.clone() {
             self.screenshot(dir, PAGES.iter().map(|p| p.to_string()).collect()).await;
         }
@@ -339,10 +428,11 @@ impl Ui {
     fn event(self: &Rc<Self>, name: &str, payload: &str) {
         let payload: Value = serde_json::from_str(payload).unwrap_or(Value::Null);
         match name {
-            events::SPEECH_CATALOG => speech::receive(self, &payload),
+            events::SPEECH_CATALOG => voice::receive(self, &payload),
+            events::MODEL_CATALOG => self.receive_models(&payload),
             events::AUDIO_DEVICES_CHANGED => {
                 let ui = self.clone();
-                spawn(async move { audio::refresh_microphones(&ui).await });
+                spawn(async move { general::refresh_microphones(&ui).await });
             }
             events::SETTING_CHANGED => {
                 if let (Some(key), Some(value)) = (payload["key"].as_str(), payload["value"].as_str()) {
@@ -437,17 +527,84 @@ fn toggle(ui: &Rc<Ui>, row: &adw::SwitchRow, key: &'static str, after: impl Fn(&
     });
 }
 
-fn button(label: &str) -> gtk::Button {
-    gtk::Button::builder().label(label).valign(gtk::Align::Center).build()
+/// A list whose entries are stored values of one setting.
+pub(super) struct List {
+    pub row: adw::ComboRow,
+    values: RefCell<Vec<String>>,
 }
 
-fn entry(width: i32) -> gtk::Entry {
-    gtk::Entry::builder().width_chars(width).valign(gtk::Align::Center).build()
+impl List {
+    fn new(title: &str, subtitle: Option<&str>) -> Self {
+        let row = adw::ComboRow::builder().title(title).build();
+        if let Some(subtitle) = subtitle {
+            row.set_subtitle(subtitle);
+        }
+        Self { row, values: RefCell::default() }
+    }
+
+    fn fill(&self, ui: &Ui, choices: Choices) {
+        ui.quietly(|| {
+            self.row.set_model(Some(&string_list(&choices.labels)));
+            self.row.set_selected(choices.selected as u32);
+        });
+        *self.values.borrow_mut() = choices.values;
+    }
+
+    /// Picking an entry saves it; when the daemon refuses, `refill` puts the list back.
+    fn bind(ui: &Rc<Ui>, list: fn(&Ui) -> &List, key: &'static str, refill: fn(&Ui)) {
+        let owner = ui.clone();
+        list(ui).row.connect_selected_notify(move |row| {
+            if owner.updating.get() {
+                return;
+            }
+            let Some(value) = list(&owner).values.borrow().get(row.selected() as usize).cloned() else { return };
+            if owner.settings.borrow().get(key) == Some(&value) {
+                return;
+            }
+            let ui = owner.clone();
+            spawn(async move {
+                if !ui.save(key, &value).await {
+                    refill(&ui);
+                }
+            });
+        });
+    }
+}
+
+fn button(label: &str) -> gtk::Button {
+    gtk::Button::builder().label(label).valign(gtk::Align::Center).build()
 }
 
 fn string_list(labels: &[String]) -> gtk::StringList {
     let items: Vec<&str> = labels.iter().map(String::as_str).collect();
     gtk::StringList::new(&items)
+}
+
+/// Runs `commit` when Enter is pressed in `widget` or focus leaves it, unless the page is
+/// being filled.
+fn on_commit(ui: &Rc<Ui>, widget: &impl IsA<gtk::Widget>, commit: impl Fn(&Rc<Ui>) + 'static) {
+    let commit = Rc::new(commit);
+    let focus = gtk::EventControllerFocus::new();
+    {
+        let (ui, commit) = (ui.clone(), commit.clone());
+        focus.connect_leave(move |_| {
+            if !ui.updating.get() && !ui.closing.get() {
+                commit(&ui);
+            }
+        });
+    }
+    widget.add_controller(focus);
+    let ui = ui.clone();
+    let activate = move || {
+        if !ui.updating.get() {
+            commit(&ui);
+        }
+    };
+    if let Some(entry) = widget.dynamic_cast_ref::<gtk::Entry>() {
+        entry.connect_activate(move |_| activate());
+    } else if let Some(row) = widget.dynamic_cast_ref::<adw::EntryRow>() {
+        row.connect_entry_activated(move |_| activate());
+    }
 }
 
 /// The daemon binary sits next to this one; started detached, in daemon mode.

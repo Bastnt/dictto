@@ -1,5 +1,5 @@
-//! General: start on boot, sound effects, languages and the push-to-talk hotkey.
-use super::{button, shortcuts, spawn, toggle, Ui};
+//! General: sign-in start, sounds, spoken languages and the microphone.
+use super::{button, spawn, toggle, List, Ui};
 use crate::form;
 use adw::prelude::*;
 use dictto_core::settings_model::LANGUAGES;
@@ -10,39 +10,36 @@ pub(super) struct Page {
     pub page: adw::PreferencesPage,
     auto_start: adw::SwitchRow,
     sounds: adw::SwitchRow,
-    languages: adw::ActionRow,
-    change: gtk::Button,
-    hotkey: gtk::Entry,
-    save: gtk::Button,
+    languages: gtk::Label,
+    choose: gtk::Button,
+    microphone: List,
 }
 
 impl Page {
     pub fn new() -> Self {
-        let auto_start =
-            adw::SwitchRow::builder().title("Start on boot").subtitle("Launch Dictto when you sign in").build();
-        let sounds =
-            adw::SwitchRow::builder().title("Sound effects").subtitle("Play sounds on recording events").build();
-        let change = button("Change");
-        let languages = adw::ActionRow::builder().title("Languages").build();
-        languages.add_suffix(&change);
-        let options = adw::PreferencesGroup::new();
-        options.add(&auto_start);
-        options.add(&sounds);
-        options.add(&languages);
-        let hotkey = shortcuts::field();
-        let save = button("Save");
+        // Windows says "when you sign in to Windows".
+        let auto_start = adw::SwitchRow::builder().title("Start Dictto when you sign in").build();
+        let sounds = adw::SwitchRow::builder().title("Play a sound when recording starts and stops").build();
+        let startup = adw::PreferencesGroup::new();
+        startup.add(&auto_start);
+        startup.add(&sounds);
+        let languages = gtk::Label::builder().wrap(true).xalign(1.0).build();
+        let choose = button("Choose...");
         let row = adw::ActionRow::builder()
-            .title("Push-to-talk hotkey")
-            .subtitle("Hold to dictate; double-press for continuous recording. Keys are named by their US-layout position.")
+            .title("Spoken languages")
+            .subtitle("Naming your languages helps the model; auto-detect guesses for each dictation.")
             .build();
-        row.add_suffix(&hotkey);
-        row.add_suffix(&save);
-        let dictation = adw::PreferencesGroup::new();
-        dictation.add(&row);
+        row.add_suffix(&languages);
+        row.add_suffix(&choose);
+        let microphone =
+            List::new("Microphone", Some("Auto-detect follows the system default input device."));
+        let input = adw::PreferencesGroup::new();
+        input.add(&row);
+        input.add(&microphone.row);
         let page = adw::PreferencesPage::new();
-        page.add(&options);
-        page.add(&dictation);
-        Self { page, auto_start, sounds, languages, change, hotkey, save }
+        page.add(&startup);
+        page.add(&input);
+        Self { page, auto_start, sounds, languages, choose, microphone }
     }
 }
 
@@ -52,33 +49,37 @@ pub(super) fn fill(ui: &Ui) {
     ui.quietly(|| {
         page.auto_start.set_active(form::is_on(&settings, "auto_start"));
         page.sounds.set_active(form::is_on(&settings, "sound_effects_enabled"));
-        page.languages.set_subtitle(&form::languages_summary(&settings));
-        page.hotkey.set_text(settings.get("hotkey").map_or("", String::as_str));
     });
+    page.languages.set_text(&form::languages_summary(&settings));
+    drop(settings);
+    fill_microphones(ui);
+}
+
+fn fill_microphones(ui: &Ui) {
+    let choices = form::microphone_choices(&ui.microphones.borrow(), &ui.settings.borrow());
+    ui.general.microphone.fill(ui, choices);
+}
+
+pub(super) async fn refresh_microphones(ui: &Ui) {
+    let Some(client) = ui.client() else { return };
+    let list = match client.microphones().await {
+        Ok(list) => list,
+        Err(error) => {
+            ui.set_status(&error);
+            Vec::new()
+        }
+    };
+    *ui.microphones.borrow_mut() = list;
+    fill_microphones(ui);
 }
 
 pub(super) fn connect(ui: &Rc<Ui>) {
     let page = &ui.general;
     toggle(ui, &page.auto_start, "auto_start", |_| {});
     toggle(ui, &page.sounds, "sound_effects_enabled", |_| {});
-    shortcuts::record(ui, &page.hotkey);
+    List::bind(ui, |ui| &ui.general.microphone, "microphone_device", fill_microphones);
     let owner = ui.clone();
-    page.change.connect_clicked(move |_| open_languages(&owner));
-    let owner = ui.clone();
-    page.save.connect_clicked(move |_| {
-        let ui = owner.clone();
-        spawn(async move {
-            let raw = ui.general.hotkey.text();
-            let settings = ui.settings.borrow().clone();
-            match form::save_shortcut(&*ui, &settings, "hotkey", &raw).await {
-                Ok(value) => {
-                    ui.general.hotkey.set_text(&value);
-                    ui.set_status(form::SAVED);
-                }
-                Err(error) => ui.set_status(&error),
-            }
-        });
-    });
+    page.choose.connect_clicked(move |_| open_languages(&owner));
 }
 
 struct LanguageRow {
@@ -88,11 +89,11 @@ struct LanguageRow {
     check: gtk::CheckButton,
 }
 
-/// The Windows "Languages (select all that apply)" page, as a dialog. Each change is
-/// saved at once, as on Windows.
+/// The Windows "Spoken languages (select all that apply)" page, as a dialog. Each change
+/// is saved at once, as on Windows.
 fn open_languages(ui: &Rc<Ui>) {
     let auto = gtk::CheckButton::with_label("Auto-detect");
-    let search = gtk::SearchEntry::builder().placeholder_text("Search").hexpand(true).build();
+    let search = gtk::SearchEntry::builder().placeholder_text("Language name").hexpand(true).build();
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .css_classes(["boxed-list"])
@@ -123,7 +124,7 @@ fn open_languages(ui: &Rc<Ui>) {
                 row.check.set_active(selected.borrow().iter().any(|v| v == row.code));
             }
             filling.set(false);
-            ui.general.languages.set_subtitle(&form::languages_summary(&settings));
+            ui.general.languages.set_text(&form::languages_summary(&settings));
         })
     };
     sync();
@@ -133,7 +134,7 @@ fn open_languages(ui: &Rc<Ui>) {
             let (ui, sync) = (ui.clone(), sync.clone());
             spawn(async move {
                 if ui.save("languages", &value).await {
-                    ui.general.languages.set_subtitle(&form::languages_summary(&ui.settings.borrow()));
+                    ui.general.languages.set_text(&form::languages_summary(&ui.settings.borrow()));
                 } else {
                     sync();
                 }
@@ -199,7 +200,7 @@ fn open_languages(ui: &Rc<Ui>) {
         .margin_top(12)
         .margin_bottom(12)
         .build();
-    body.append(&gtk::Label::builder().label("Languages (select all that apply)").xalign(0.0).build());
+    body.append(&gtk::Label::builder().label("Spoken languages (select all that apply)").xalign(0.0).build());
     body.append(&filters);
     body.append(&gtk::ScrolledWindow::builder().child(&list).vexpand(true).build());
     let done = gtk::Button::builder().label("Done").css_classes(["suggested-action"]).build();
@@ -209,7 +210,7 @@ fn open_languages(ui: &Rc<Ui>) {
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&body));
     let dialog = adw::Dialog::builder()
-        .title("Languages")
+        .title("Spoken languages")
         .content_width(460)
         .content_height(600)
         .child(&toolbar)
@@ -219,4 +220,5 @@ fn open_languages(ui: &Rc<Ui>) {
         closing.close();
     });
     dialog.present(Some(&ui.window));
+    search.grab_focus();
 }

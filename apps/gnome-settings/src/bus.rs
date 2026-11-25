@@ -29,9 +29,7 @@ trait App {
     fn key_hint(&self) -> zbus::Result<String>;
     fn microphones(&self) -> zbus::Result<Vec<(String, String, String, bool)>>;
     fn discover_speech_models(&self, generation: u64) -> zbus::Result<()>;
-    fn bar_start(&self) -> zbus::Result<()>;
-    fn bar_stop(&self) -> zbus::Result<()>;
-    fn bar_cancel(&self) -> zbus::Result<()>;
+    fn discover_models(&self, generation: u64, refresh: bool) -> zbus::Result<()>;
     #[zbus(signal)]
     fn event(&self, name: String, payload_json: String) -> zbus::Result<()>;
     #[zbus(property)]
@@ -202,22 +200,9 @@ impl Client {
         on_bus(async move { proxy.discover_speech_models(generation).await }).await
     }
 
-    pub async fn bar(&self, action: Bar) -> Result<(), String> {
+    /// The answer arrives as the `model-catalog` event carrying `generation`.
+    pub async fn discover_models(&self, generation: u64, refresh: bool) -> Result<(), String> {
         let proxy = self.proxy.clone();
-        on_bus(async move {
-            match action {
-                Bar::Start => proxy.bar_start().await,
-                Bar::Stop => proxy.bar_stop().await,
-                Bar::Cancel => proxy.bar_cancel().await,
-            }
-        })
-        .await
+        on_bus(async move { proxy.discover_models(generation, refresh).await }).await
     }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum Bar {
-    Start,
-    Stop,
-    Cancel,
 }

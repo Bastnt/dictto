@@ -70,6 +70,12 @@ impl ChordRecorder {
         chord(modifiers.iter())
     }
 
+    /// No key is down: a recorded chord can be saved without the daemon seeing its keys
+    /// still held once capture ends.
+    pub fn idle(&self) -> bool {
+        self.held.is_empty()
+    }
+
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -88,6 +94,7 @@ mod tests {
         assert_eq!(recorder.release(Key::F(8)), Recorded::Pending);
         assert_eq!(recorder.release(Key::Shift), Recorded::Pending);
         assert_eq!(recorder.release(Key::Ctrl), Recorded::Pending);
+        assert!(recorder.idle());
     }
 
     #[test]

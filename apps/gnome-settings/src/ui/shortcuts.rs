@@ -1,42 +1,52 @@
-//! Shortcuts: the speech shortcuts, and the key-recording field the hotkey shares.
+//! Shortcuts: dictation and speech shortcuts, each field recording the keys pressed in it
+//! and saving the chord once they are released.
 use super::{button, spawn, Ui};
 use crate::chord::{ChordRecorder, Recorded};
-use crate::form::{self, SPEECH_SHORTCUTS};
+use crate::form::{self, SHORTCUTS};
 use adw::prelude::*;
 use dictto_core::keys::Key;
-use gtk::glib;
+use gtk::{gdk, glib};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 pub(super) struct Page {
     pub page: adw::PreferencesPage,
-    fields: Vec<(&'static str, gtk::Entry, gtk::Button)>,
+    fields: Vec<(gtk::Entry, gtk::Button)>,
 }
 
 impl Page {
     pub fn new() -> Self {
         let group = adw::PreferencesGroup::builder()
-            .title("Speech shortcuts")
-            // Windows says "Enter a chord such as Ctrl+Alt+F8"; on Linux Ctrl+Alt+F1..F12
-            // switch virtual terminals, and these fields record keys rather than take text.
+            // Windows has no Backspace line: a Windows field takes Backspace as a key.
+            // Keys are recorded by physical position, so the layout note matters here.
             .description(
-                "Press a chord such as Ctrl+Shift+F8. Press Backspace to clear and disable it. \
+                "Click a field, then press the keys together. Escape cancels; Backspace clears. \
                  Keys are named by their US-layout position.",
             )
             .build();
-        let fields = SPEECH_SHORTCUTS
+        let fields = SHORTCUTS
             .iter()
-            .map(|&(key, label)| {
-                let (field, save) = (field(), button("Save"));
+            .enumerate()
+            .map(|(index, &(_, label))| {
+                let field = gtk::Entry::builder()
+                    .width_chars(16)
+                    .valign(gtk::Align::Center)
+                    .placeholder_text("Not set")
+                    .build();
+                field.set_editable(false);
+                let reset = button(if index == 0 { "Reset" } else { "Clear" });
                 let row = adw::ActionRow::builder().title(label).build();
                 row.add_suffix(&field);
-                row.add_suffix(&save);
+                row.add_suffix(&reset);
                 group.add(&row);
-                (key, field, save)
+                (field, reset)
             })
             .collect();
         let note = adw::PreferencesGroup::builder()
-            .description("Read text uses the selection in the focused app, then the clipboard if nothing is selected.")
+            .description(
+                "Read text uses the selection in the focused app, or the clipboard when nothing is selected. \
+                 Clone actions use your last voice sample.",
+            )
             .build();
         let page = adw::PreferencesPage::new();
         page.add(&group);
@@ -46,41 +56,29 @@ impl Page {
 }
 
 pub(super) fn fill(ui: &Ui) {
-    let settings = ui.settings.borrow();
-    for (key, field, _) in &ui.shortcuts.fields {
-        field.set_text(settings.get(*key).map_or("", String::as_str));
+    for index in 0..SHORTCUTS.len() {
+        restore(ui, index);
     }
+}
+
+fn restore(ui: &Ui, index: usize) {
+    let value = ui.settings.borrow().get(SHORTCUTS[index].0).cloned().unwrap_or_default();
+    ui.shortcuts.fields[index].0.set_text(&value);
 }
 
 pub(super) fn connect(ui: &Rc<Ui>) {
-    for (key, field, save) in &ui.shortcuts.fields {
-        record(ui, field);
-        let (owner, key, field) = (ui.clone(), *key, field.clone());
-        save.connect_clicked(move |_| {
-            let (ui, field) = (owner.clone(), field.clone());
+    for (index, (field, reset)) in ui.shortcuts.fields.iter().enumerate() {
+        record(ui, index, field);
+        let owner = ui.clone();
+        reset.connect_clicked(move |_| {
+            let ui = owner.clone();
             spawn(async move {
-                let settings = ui.settings.borrow().clone();
-                match form::save_shortcut(&*ui, &settings, key, &field.text()).await {
-                    Ok(value) => {
-                        field.set_text(&value);
-                        ui.set_status(form::SAVED);
-                    }
-                    Err(error) => ui.set_status(&error),
-                }
+                let key = SHORTCUTS[index].0;
+                ui.save(key, form::shortcut_reset(key)).await;
+                restore(&ui, index);
             });
         });
     }
-}
-
-/// A field that shows the chord pressed in it rather than typed text.
-pub(super) fn field() -> gtk::Entry {
-    let field = gtk::Entry::builder()
-        .width_chars(16)
-        .valign(gtk::Align::Center)
-        .placeholder_text("Press keys")
-        .build();
-    field.set_editable(false);
-    field
 }
 
 /// GDK hardware keycodes are evdev codes plus 8 under both Wayland and X11. The daemon
@@ -89,26 +87,44 @@ fn physical_key(keycode: u32) -> Option<Key> {
     crate::keymap::from_evdev(u16::try_from(keycode.checked_sub(8)?).ok()?)
 }
 
-/// Records chords in `field`. While it has focus the daemon's shortcuts are suspended
-/// (SetHotkeyCapture), so pressing the current hotkey here does not start dictation.
-pub(super) fn record(ui: &Rc<Ui>, field: &gtk::Entry) {
+/// Records chords in field `index`. While it has focus the daemon's shortcuts are
+/// suspended (SetHotkeyCapture), so pressing the current hotkey here does not start
+/// dictation.
+fn record(ui: &Rc<Ui>, index: usize, field: &gtk::Entry) {
     let recorder = Rc::new(RefCell::new(ChordRecorder::default()));
+    // The chord shown, saved once every key is up.
+    let recorded = Rc::new(RefCell::new(None::<String>));
     let show = {
-        let (ui, field) = (ui.clone(), field.clone());
-        move |result: Recorded| match result {
+        let (ui, field, recorded) = (ui.clone(), field.clone(), recorded.clone());
+        Rc::new(move |result: Recorded| match result {
             Recorded::Pending => {}
-            Recorded::Chord(text) => field.set_text(&text),
-            Recorded::Clear => field.set_text(""),
-            Recorded::Invalid(error) => ui.set_status(&error),
-        }
+            Recorded::Chord(text) => {
+                field.set_text(&text);
+                *recorded.borrow_mut() = Some(text);
+            }
+            Recorded::Clear => {
+                field.set_text("");
+                *recorded.borrow_mut() = Some(String::new());
+            }
+            Recorded::Invalid(error) => {
+                *recorded.borrow_mut() = None;
+                ui.set_status(&error);
+            }
+        })
     };
-    let show = Rc::new(show);
     let keys = gtk::EventControllerKey::new();
     // Ahead of the entry's own key handling.
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     {
-        let (recorder, show) = (recorder.clone(), show.clone());
-        keys.connect_key_pressed(move |_, _, keycode, _| {
+        let (ui, recorder, recorded, show) = (ui.clone(), recorder.clone(), recorded.clone(), show.clone());
+        keys.connect_key_pressed(move |_, keyval, keycode, _| {
+            if keyval == gdk::Key::Escape {
+                recorder.borrow_mut().reset();
+                recorded.borrow_mut().take();
+                restore(&ui, index);
+                ui.shortcuts.fields[index].1.grab_focus();
+                return glib::Propagation::Stop;
+            }
             let Some(key) = physical_key(keycode) else { return glib::Propagation::Proceed };
             if key == Key::Tab && !recorder.borrow().holds_shortcut_modifier() {
                 return glib::Propagation::Proceed;
@@ -119,12 +135,28 @@ pub(super) fn record(ui: &Rc<Ui>, field: &gtk::Entry) {
         });
     }
     {
-        let recorder = recorder.clone();
+        let (ui, recorder, recorded) = (ui.clone(), recorder.clone(), recorded.clone());
         keys.connect_key_released(move |_, _, keycode, _| {
-            if let Some(key) = physical_key(keycode) {
-                let result = recorder.borrow_mut().release(key);
-                show(result);
+            let Some(key) = physical_key(keycode) else { return };
+            let result = recorder.borrow_mut().release(key);
+            show(result);
+            if !recorder.borrow().idle() {
+                return;
             }
+            let Some(raw) = recorded.borrow_mut().take() else { return };
+            let ui = ui.clone();
+            spawn(async move {
+                let key = SHORTCUTS[index].0;
+                let settings = ui.settings.borrow().clone();
+                match form::save_shortcut(&*ui, &settings, key, &raw).await {
+                    Ok(_) => {
+                        ui.set_status(form::SAVED);
+                        ui.shortcuts.fields[index].1.grab_focus();
+                    }
+                    Err(error) => ui.set_status(&error),
+                }
+                restore(&ui, index);
+            });
         });
     }
     field.add_controller(keys);
@@ -140,7 +172,9 @@ pub(super) fn record(ui: &Rc<Ui>, field: &gtk::Entry) {
         let ui = ui.clone();
         focus.connect_leave(move |_| {
             recorder.borrow_mut().reset();
+            recorded.borrow_mut().take();
             ui.set_field_focus(false);
+            restore(&ui, index);
         });
     }
     field.add_controller(focus);
