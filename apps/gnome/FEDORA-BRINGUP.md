@@ -5,16 +5,22 @@ Written for a Claude CLI session on the owner's Fedora machine. Everything in `a
 ## Prerequisites
 
 ```bash
-sudo dnf install gcc clang-devel pkgconf gtk4-devel libadwaita-devel pipewire-devel \
-  dbus-devel openssl-devel gjs jq git
-# Rust: either `sudo dnf install rust cargo` or rustup (https://rustup.rs)
+sudo dnf install clang-devel pkgconf gtk4-devel libadwaita-devel pipewire-devel \
+  dbus-devel openssl-devel gjs jq git rust cargo
 ```
+
+With rustup, omit `rust` and `cargo` from the DNF command. On Fedora 45,
+`clang-devel` brings in Clang and its GCC package dependencies.
 
 ## Build and install
 
 ```bash
-scripts/install-gnome.sh        # builds release, installs to ~/.local, one-time sudo for uinput
+CC=clang RUSTFLAGS="-C linker=clang" scripts/install-gnome.sh
 ```
+
+This selects Clang for native C compilation and as Rust's linker driver.
+The script builds a release, installs to `~/.local` and uses `sudo` for
+the one-time uinput setup.
 
 Then log out and back in (needed for the `input` group and for GNOME Shell to see the new extension on Wayland), and:
 
