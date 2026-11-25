@@ -51,6 +51,7 @@ For development builds: `cargo build -p dictto-gnome -p dictto-gnome-settings` a
 - GNOME Shell 51 rejected the overlay's `affectsInputRegion` chrome argument. The corrected extension is active after reboot, the panel icon is visible and the Shell clipboard D-Bus service is registered.
 - The daemon registered `com.dictto.App`, connected to PipeWire, followed the active logind session and opened Settings. After reboot the D-Bus Status was `ok`. An idle sample showed 17,116 KiB RSS, seven threads and zero libgtk mappings. With Settings open, its process showed 103,232 KiB RSS.
 - With the Dictto virtual source present, Codex dictation stalled. PipeWire still showed the built-in mic as the default and logged a Chromium input stream timeout. Turning off **Voice → Send speech to Dictto Microphone** removed the virtual source. Codex then transcribed while Dictto stayed running. The failed capture's target and the exact cause remain unknown. Speech routing with the virtual source is pending.
+- With the virtual source off, the owner confirmed that Ctrl+Super dictation pasted into an editor. The test captured from the built-in microphone. Transcription completed about 2 seconds after release, and cleanup took another 46 seconds before paste.
 - The Settings launcher now matches the GTK application ID (`com.dictto.Settings`). The installed desktop entry resolves to the Dictto name and icon. Visual confirmation in Alt+Tab is pending.
 
 ## Checklist (in this order)
