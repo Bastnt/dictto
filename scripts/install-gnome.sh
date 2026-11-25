@@ -39,7 +39,8 @@ desktop="$data_dir/applications/com.dictto.Settings.desktop"
 sed "s|@BIN@|$bin_dir|" "$pkg/com.dictto.Settings.desktop" >"$desktop"
 # Remove the old launcher only if it still matches the previous installer output.
 legacy_desktop="$data_dir/applications/com.dictto.App.desktop"
-if cmp -s "$legacy_desktop" <(sed 's/^StartupWMClass=com\.dictto\.Settings$/StartupWMClass=com.dictto.App/' "$desktop"); then
+if cmp -s "$legacy_desktop" <(sed -e '/^Exec=/s/$/ --settings/' \
+  -e 's/^StartupWMClass=com\.dictto\.Settings$/StartupWMClass=com.dictto.App/' "$desktop"); then
   rm -- "$legacy_desktop"
 fi
 install -Dm644 "$pkg/com.dictto.App.png" "$data_dir/icons/hicolor/512x512/apps/com.dictto.App.png"

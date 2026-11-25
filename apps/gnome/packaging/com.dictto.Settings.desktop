@@ -2,7 +2,7 @@
 Type=Application
 Name=Dictto
 Comment=Voice dictation
-Exec=@BIN@/dictto-gnome --settings
+Exec=@BIN@/dictto-gnome
 Icon=com.dictto.App
 Terminal=false
 Categories=Utility;AudioVideo;
