@@ -179,7 +179,10 @@ impl<B: AppBackend> AppService<B> {
         (self.show_settings)();
     }
 
-    fn quit(&self) {
+    async fn quit(&self, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) {
+        if let Err(error) = Self::event(&emitter, "app-quitting", "null").await {
+            log::warn!("cannot notify Settings that Dictto is quitting: {error}");
+        }
         (self.quit)();
     }
 

@@ -428,6 +428,7 @@ impl Ui {
     fn event(self: &Rc<Self>, name: &str, payload: &str) {
         let payload: Value = serde_json::from_str(payload).unwrap_or(Value::Null);
         match name {
+            "app-quitting" => self.window.close(),
             events::SPEECH_CATALOG => voice::receive(self, &payload),
             events::MODEL_CATALOG => self.receive_models(&payload),
             events::AUDIO_DEVICES_CHANGED => {
