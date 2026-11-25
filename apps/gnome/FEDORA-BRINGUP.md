@@ -44,7 +44,8 @@ For development builds: `cargo build -p dictto-gnome -p dictto-gnome-settings` a
 
 - The owner’s desktop runs GNOME Shell 51.1 on Wayland with an active logind session and a working PipeWire connection. Shell extension version validation is enabled, so the extension metadata includes GNOME 51.
 - The extension syntax, import, D-Bus XML and icon checks pass on Fedora 45. All 21 GJS tests pass.
-- The build and live desktop checklist below are pending. The build dependencies need to be installed from a terminal that can run `sudo`. The session used for the initial checks had `NoNewPrivs` set and could not elevate. Before input setup, the user lacked the `input` group and `/dev/uinput` was accessible only to root.
+- The release build and installation completed on Fedora 45. Both installed binaries match the release artifacts, and the installed extension metadata matches the checkout.
+- The installer added the user to the `input` group and set `/dev/uinput` to mode `0660` with group `input`. A fresh GNOME login is pending. The current Shell process still lacks the group and has yet to discover the extension, so the live checklist remains pending.
 
 ## Checklist (in this order)
 
