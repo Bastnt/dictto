@@ -45,7 +45,8 @@ impl Page {
         let note = adw::PreferencesGroup::builder()
             .description(
                 "Read text uses the selection in the focused app, or the clipboard when nothing is selected. \
-                 Clone actions use your last voice sample.",
+                 For recording shortcuts, hold to record or double-press to keep recording. \
+                 Press again to stop. Clone actions use your last voice sample.",
             )
             .build();
         let page = adw::PreferencesPage::new();

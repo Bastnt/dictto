@@ -125,6 +125,7 @@ pub fn configure(mut bindings: Vec<(Action, Tracker)>) {
         tracker.suspended = current.suspended;
     }
     current.bindings = bindings;
+    crate::dictation::send_speech(session::Message::ResetGesture);
 }
 
 /// Validates against the dictation shortcut too; `strict` rejects instead of skipping bad entries.
@@ -176,17 +177,21 @@ impl Shortcuts {
         self.suppressed.clear();
     }
 
-    fn event(&mut self, source: u16, key: Option<Key>, down: bool) -> (Option<Action>, bool) {
+    fn event(
+        &mut self, source: u16, key: Option<Key>, down: bool, gestures: bool,
+    ) -> (Option<(Action, bool)>, bool) {
         let mut hit = None;
         for (action, tracker) in &mut self.bindings {
             let transition = key.and_then(|key| tracker.event_from(source, key, down));
-            if transition == Some(true) && hit.is_none() {
-                hit = Some(*action);
+            if let Some(pressed) = transition {
+                if hit.is_none() && (pressed || (gestures && action.records())) {
+                    hit = Some((*action, pressed));
+                }
             }
         }
         // Keep the function key and its repeats out of the focused application's accelerators.
         let modifier = matches!(key, Some(Key::Ctrl | Key::Alt | Key::Shift | Key::Super));
-        if hit.is_some() && !modifier {
+        if hit.is_some_and(|(_, pressed)| pressed) && !modifier {
             self.suppressed.insert(source);
         }
         let suppress = if down {
@@ -198,14 +203,25 @@ impl Shortcuts {
     }
 }
 
-/// Returns the action whose chord this event completes and whether to swallow the event.
-pub(crate) fn key_event(source: u16, key: Option<Key>, down: bool) -> (Option<Action>, bool) {
-    shortcuts().lock().unwrap().event(source, key, down)
+/// Returns the speech shortcut message and whether to swallow the key event.
+pub(crate) fn key_event(
+    source: u16, key: Option<Key>, down: bool, gestures: bool,
+) -> (Option<session::Message>, bool) {
+    let (hit, swallow) = shortcuts().lock().unwrap().event(source, key, down, gestures);
+    let message = hit.map(|(action, pressed)| {
+        if gestures && action.records() {
+            session::Message::Gesture(action, pressed, tokio::time::Instant::now())
+        } else {
+            session::Message::Action(action)
+        }
+    });
+    (message, swallow)
 }
 
 /// Releases every speech chord and forgets swallowed keys whose release may never come.
 pub(crate) fn reset_input() {
     shortcuts().lock().unwrap().reset();
+    crate::dictation::send_speech(session::Message::ResetGesture);
 }
 
 pub(crate) fn suspend(active: bool) {
@@ -214,6 +230,9 @@ pub(crate) fn suspend(active: bool) {
     for (_, tracker) in &mut current.bindings {
         tracker.reset();
         tracker.suspended = active;
+    }
+    if active {
+        crate::dictation::send_speech(session::Message::ResetGesture);
     }
 }
 
@@ -509,13 +528,33 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let (ctrl, shift, f9) = (Some(Key::Ctrl), Some(Key::Shift), Some(Key::F(9)));
-        assert_eq!(chords.event(0xa2, ctrl, true), (None, false));
-        assert_eq!(chords.event(0xa0, shift, true), (None, false));
-        assert_eq!(chords.event(0x78, f9, true), (Some(Action::ReadClone), true));
-        assert_eq!(chords.event(0x78, f9, true), (None, true));
-        assert_eq!(chords.event(0xa2, ctrl, false), (None, false));
-        assert_eq!(chords.event(0x78, f9, false), (None, true));
-        assert_eq!(chords.event(0x78, f9, true), (None, false));
+        assert_eq!(chords.event(0xa2, ctrl, true, false), (None, false));
+        assert_eq!(chords.event(0xa0, shift, true, false), (None, false));
+        assert_eq!(chords.event(0x78, f9, true, false), (Some((Action::ReadClone, true)), true));
+        assert_eq!(chords.event(0x78, f9, true, false), (None, true));
+        assert_eq!(chords.event(0xa2, ctrl, false, false), (None, false));
+        assert_eq!(chords.event(0x78, f9, false, false), (None, true));
+        assert_eq!(chords.event(0x78, f9, true, false), (None, false));
+    }
+
+    #[test]
+    fn recording_shortcut_reports_release_only_in_gesture_mode() {
+        let settings = HashMap::from([("tts_hotkey_sample_mic".into(), "F9".into())]);
+        for gestures in [false, true] {
+            let mut chords = Shortcuts {
+                bindings: parse_bindings(&settings, true).unwrap(),
+                ..Default::default()
+            };
+            let key = Some(Key::F(9));
+            assert_eq!(
+                chords.event(0x78, key, true, gestures),
+                (Some((Action::SampleMic, true)), true)
+            );
+            assert_eq!(
+                chords.event(0x78, key, false, gestures),
+                (gestures.then_some((Action::SampleMic, false)), true)
+            );
+        }
     }
 
     #[test]
@@ -528,11 +567,11 @@ pub(crate) mod tests {
             bindings: parse_bindings(&settings, true).unwrap(),
             ..Default::default()
         };
-        assert_eq!(chords.event(0xa2, Some(Key::Ctrl), true), (None, false));
-        assert_eq!(chords.event(0x1b, None, true), (None, false));
-        assert_eq!(chords.event(0xa4, Some(Key::Alt), true), (Some(Action::ReadVoice), false));
-        assert_eq!(chords.event(0xa4, Some(Key::Alt), false), (None, false));
-        assert_eq!(chords.event(0x1b, None, false), (None, false));
+        assert_eq!(chords.event(0xa2, Some(Key::Ctrl), true, false), (None, false));
+        assert_eq!(chords.event(0x1b, None, true, false), (None, false));
+        assert_eq!(chords.event(0xa4, Some(Key::Alt), true, false), (Some((Action::ReadVoice, true)), false));
+        assert_eq!(chords.event(0xa4, Some(Key::Alt), false, false), (None, false));
+        assert_eq!(chords.event(0x1b, None, false, false), (None, false));
     }
 
     #[test]
@@ -542,10 +581,10 @@ pub(crate) mod tests {
             bindings: parse_bindings(&settings, true).unwrap(),
             ..Default::default()
         };
-        assert_eq!(chords.event(0x78, Some(Key::F(9)), true), (Some(Action::ReadClone), true));
+        assert_eq!(chords.event(0x78, Some(Key::F(9)), true, false), (Some((Action::ReadClone, true)), true));
         chords.reset();
         assert!(chords.suppressed.is_empty());
-        assert_eq!(chords.event(0x78, Some(Key::F(9)), true), (Some(Action::ReadClone), true));
+        assert_eq!(chords.event(0x78, Some(Key::F(9)), true, false), (Some((Action::ReadClone, true)), true));
     }
 
     #[test]
@@ -558,7 +597,7 @@ pub(crate) mod tests {
         for (_, tracker) in &mut chords.bindings {
             tracker.suspended = true;
         }
-        assert_eq!(chords.event(0x78, Some(Key::F(9)), true), (None, false));
+        assert_eq!(chords.event(0x78, Some(Key::F(9)), true, false), (None, false));
     }
 
     #[test]

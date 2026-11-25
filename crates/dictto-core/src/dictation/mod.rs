@@ -84,26 +84,36 @@ pub fn set_input_suspended(suspended: bool) {
 /// Unmapped keys (`key == None`) never affect the dictation chord but still reach speech.
 /// Returns true when the event must be swallowed.
 pub fn key_event(source: u16, key: Option<keys::Key>, down: bool) -> bool {
+    handle_key_event(source, key, down, false)
+}
+
+/// Feeds keyboard events with hold and double-tap gestures for recording speech shortcuts.
+#[cfg(feature = "speech")]
+pub fn key_event_with_speech_gestures(source: u16, key: Option<keys::Key>, down: bool) -> bool {
+    handle_key_event(source, key, down, true)
+}
+
+fn handle_key_event(source: u16, key: Option<keys::Key>, down: bool, speech_gestures: bool) -> bool {
     // Held across the speech handling so a concurrent suspension cannot interleave.
     let mut input = input().lock().unwrap();
     let Some(transition) = input.key(source, key, down) else {
         return false;
     };
     send_transition(transition);
-    speech_key_event(source, key, down)
+    speech_key_event(source, key, down, speech_gestures)
 }
 
 #[cfg(feature = "speech")]
-fn speech_key_event(source: u16, key: Option<keys::Key>, down: bool) -> bool {
-    let (action, swallow) = crate::speech::key_event(source, key, down);
-    if let Some(action) = action {
-        send_speech(crate::speech::session::Message::Action(action));
+fn speech_key_event(source: u16, key: Option<keys::Key>, down: bool, gestures: bool) -> bool {
+    let (message, swallow) = crate::speech::key_event(source, key, down, gestures);
+    if let Some(message) = message {
+        send_speech(message);
     }
     swallow
 }
 
 #[cfg(not(feature = "speech"))]
-fn speech_key_event(_: u16, _: Option<keys::Key>, _: bool) -> bool {
+fn speech_key_event(_: u16, _: Option<keys::Key>, _: bool, _: bool) -> bool {
     false
 }
 
@@ -308,9 +318,9 @@ fn start_recording(app: &AppHandle, sounds: &dyn Sounds, preload: bool, pending:
 }
 
 /// How long a press can last and still count as a "tap" for double-tap detection
-const TAP_MAX_DURATION: std::time::Duration = std::time::Duration::from_millis(250);
+pub(crate) const TAP_MAX_DURATION: std::time::Duration = std::time::Duration::from_millis(250);
 /// Window after first tap release to detect second tap
-const DOUBLE_TAP_WINDOW: std::time::Duration = std::time::Duration::from_millis(300);
+pub(crate) const DOUBLE_TAP_WINDOW: std::time::Duration = std::time::Duration::from_millis(300);
 
 const DEFAULT_HOTKEY: &str = "Ctrl+Win";
 

@@ -335,7 +335,9 @@ async fn read(device: evdev::Device, path: PathBuf, failure: Failure, failures: 
                         // The source is the bare key code, so two keyboards holding the
                         // same key count as one key until either releases it.
                         let code = event.code();
-                        let _ = dictation::key_event(code, keymap::from_evdev(code), down);
+                        let _ = dictation::key_event_with_speech_gestures(
+                            code, keymap::from_evdev(code), down,
+                        );
                     }
                 }
                 Err(error) => break error,
