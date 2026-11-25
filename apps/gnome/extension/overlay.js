@@ -44,7 +44,7 @@ export class Overlay {
         for (const child of [this._cancel, this._area, this._label, this._stop])
             this._pill.add_child(child);
 
-        Main.layoutManager.addTopChrome(this._pill, {affectsInputRegion: true});
+        Main.layoutManager.addTopChrome(this._pill);
 
         this._interface = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
         this._signals = [

@@ -31,6 +31,8 @@ dictto-gnome                     # or launch Dictto from the app grid
 
 Re-running the script after a change stops a running daemon (D-Bus `Quit`), replaces the binaries and restarts it. Extension JS changes need a new login session (Wayland cannot reload the shell).
 
+If the user manager survives the logout, GNOME Shell and apps it launches may still lack the new `input` group. Compare `id -G "$USER"` with the `Groups:` line in `/proc/$(pgrep -x gnome-shell)/status`. Reboot if the running session still has the old groups.
+
 For development builds: `cargo build -p dictto-gnome -p dictto-gnome-settings` and `cargo test -p dictto-gnome -p dictto-gnome-settings`. `scripts/wsl-build-gnome.sh` is Ubuntu/WSL only.
 
 ## Watching logs
@@ -45,7 +47,9 @@ For development builds: `cargo build -p dictto-gnome -p dictto-gnome-settings` a
 - The owner’s desktop runs GNOME Shell 51.1 on Wayland with an active logind session and a working PipeWire connection. Shell extension version validation is enabled, so the extension metadata includes GNOME 51.
 - The extension syntax, import, D-Bus XML and icon checks pass on Fedora 45. All 21 GJS tests pass.
 - The release build and installation completed on Fedora 45. Both installed binaries match the release artifacts, and the installed extension metadata matches the checkout.
-- The installer added the user to the `input` group and set `/dev/uinput` to mode `0660` with group `input`. A fresh GNOME login is pending. The current Shell process still lacks the group and has yet to discover the extension, so the live checklist remains pending.
+- The installer added the user to the `input` group and set `/dev/uinput` to mode `0660` with group `input`. The first GNOME relogin discovered the extension, but its surviving user manager and the new Shell still had the old groups.
+- GNOME Shell 51 rejected the overlay's `affectsInputRegion` chrome argument. The extension no longer passes it, and the corrected module is installed. Loading it in a fresh Shell is pending.
+- The real daemon registered `com.dictto.App`, connected to PipeWire, followed the active logind session and opened Settings. D-Bus reported the keyboard permission failure while the user manager lacked the group. Hotkeys, dictation, paste and the rest of the live checklist are pending.
 
 ## Checklist (in this order)
 
