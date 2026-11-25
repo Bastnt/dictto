@@ -40,6 +40,10 @@ export const APP_XML = `<node>
     <method name="DiscoverSpeechModels">
       <arg name="generation" type="t" direction="in"/>
     </method>
+    <method name="DiscoverModels">
+      <arg name="generation" type="t" direction="in"/>
+      <arg name="refresh" type="b" direction="in"/>
+    </method>
     <signal name="Event">
       <arg name="name" type="s"/>
       <arg name="payload_json" type="s"/>

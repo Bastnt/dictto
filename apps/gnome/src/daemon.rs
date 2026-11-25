@@ -233,6 +233,9 @@ impl AppBackend for LateRuntime {
     fn discover_speech_models(&self, generation: u64) {
         self.run(|r| r.discover_speech_models(generation));
     }
+    fn discover_models(&self, generation: u64, refresh: bool) {
+        self.run(|r| r.discover_models(generation, refresh));
+    }
 }
 
 struct GnomeServices {

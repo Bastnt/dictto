@@ -58,6 +58,9 @@ impl AppBackend for Fake {
     fn discover_speech_models(&self, generation: u64) {
         self.generation.store(generation, Ordering::SeqCst);
     }
+    fn discover_models(&self, generation: u64, refresh: bool) {
+        self.note(&format!("models {generation} {refresh}"));
+    }
 }
 
 fn service(fake: &Arc<Fake>) -> AppService<Fake> {
@@ -142,7 +145,11 @@ async fn bar_and_capture_reach_the_backend() {
     service.bar_cancel();
     service.set_capture(true, None);
     service.discover_speech_models(7);
-    assert_eq!(*fake.calls.lock().unwrap(), ["start", "stop", "cancel", "capture true"]);
+    service.discover_models(8, true);
+    assert_eq!(
+        *fake.calls.lock().unwrap(),
+        ["start", "stop", "cancel", "capture true", "models 8 true"]
+    );
     assert_eq!(fake.generation.load(Ordering::SeqCst), 7);
 }
 

@@ -45,6 +45,12 @@
     <method name="DiscoverSpeechModels">
       <arg name="generation" type="t" direction="in"/>
     </method>
+    <!-- Asynchronous: the result arrives as Event "model-catalog" with the same generation:
+         {generation, transcription, chat} or {generation, error}. refresh bypasses the cache. -->
+    <method name="DiscoverModels">
+      <arg name="generation" type="t" direction="in"/>
+      <arg name="refresh" type="b" direction="in"/>
+    </method>
     <!-- Every core event: name is a dictto_core::events constant, payload_json its JSON. -->
     <signal name="Event">
       <arg name="name" type="s"/>

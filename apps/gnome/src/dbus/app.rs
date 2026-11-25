@@ -27,6 +27,7 @@ pub trait AppBackend: Send + Sync + 'static {
     fn stop_recording(&self);
     fn cancel_recording(&self);
     fn discover_speech_models(&self, generation: u64);
+    fn discover_models(&self, generation: u64, refresh: bool);
 }
 
 impl AppBackend for Runtime {
@@ -62,6 +63,9 @@ impl AppBackend for Runtime {
     }
     fn discover_speech_models(&self, generation: u64) {
         Runtime::discover_speech_models(self, generation);
+    }
+    fn discover_models(&self, generation: u64, refresh: bool) {
+        Runtime::discover_models(self, generation, refresh);
     }
 }
 
@@ -233,6 +237,10 @@ impl<B: AppBackend> AppService<B> {
 
     fn discover_speech_models(&self, generation: u64) {
         self.backend.discover_speech_models(generation);
+    }
+
+    fn discover_models(&self, generation: u64, refresh: bool) {
+        self.backend.discover_models(generation, refresh);
     }
 
     #[zbus(signal)]
