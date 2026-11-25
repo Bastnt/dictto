@@ -15,6 +15,7 @@ pub use sounds::PipewireSounds;
 use devices::{NodeInfo, Watcher};
 use dictto_core::audio::{AudioError, DeviceMonitorState, DeviceSelection, MicrophoneInfo};
 use dictto_core::host::AppHandle;
+use dictto_core::platform::SampleTap;
 use pipewire as pw;
 use pw::spa::utils::result::AsyncSeq;
 use std::cell::RefCell;
@@ -34,6 +35,7 @@ enum Command {
         recorder: u64,
         selection: DeviceSelection,
         app: Option<AppHandle>,
+        tap: Option<SampleTap>,
         reply: mpsc::Sender<Result<(), AudioError>>,
     },
     StopCapture {
@@ -326,9 +328,10 @@ impl Graph {
                 recorder,
                 selection,
                 app,
+                tap,
                 reply,
             } => {
-                let _ = reply.send(self.start_capture(recorder, selection, app));
+                let _ = reply.send(self.start_capture(recorder, selection, app, tap));
             }
             Command::StopCapture { recorder, reply } => {
                 let samples = match self.captures.remove(&recorder) {
@@ -423,6 +426,7 @@ impl Graph {
         recorder: u64,
         selection: DeviceSelection,
         app: Option<AppHandle>,
+        tap: Option<SampleTap>,
     ) -> Result<(), AudioError> {
         self.captures.remove(&recorder);
         let core = match self.connection.as_ref() {
@@ -430,7 +434,7 @@ impl Graph {
             None => return Err(AudioError::DeviceError("PipeWire is not connected.".into())),
         };
         let capture = if let DeviceSelection::PlaybackLoopback = selection {
-            recorder::Capture::open(&core, None, Some(self.sink_generation), app)?
+            recorder::Capture::open(&core, None, Some(self.sink_generation), app, tap)?
         } else {
             let nodes = self.sorted_nodes();
             let target = devices::select_target(&selection, &nodes, self.default_source.as_deref())
@@ -441,7 +445,7 @@ impl Graph {
                 target.name,
                 target.description
             );
-            recorder::Capture::open(&core, Some(target), None, app)?
+            recorder::Capture::open(&core, Some(target), None, app, tap)?
         };
         self.captures.insert(recorder, capture);
         Ok(())

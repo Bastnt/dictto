@@ -5,7 +5,7 @@ use super::{format_pod, Command, Pipewire};
 use dictto_core::audio::dsp::{finish, resample, to_mono_i16_f32, Waveform, SAMPLE_RATE};
 use dictto_core::audio::{emit_waveform, AudioError, DeviceSelection};
 use dictto_core::host::AppHandle;
-use dictto_core::platform::Recorder;
+use dictto_core::platform::{Recorder, SampleTap};
 use pipewire as pw;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -45,12 +45,8 @@ impl PipewireRecorder {
     }
 }
 
-impl Recorder for PipewireRecorder {
-    fn set_app_handle(&mut self, app: AppHandle) {
-        self.app = Some(app);
-    }
-
-    fn start(&mut self, device: DeviceSelection) -> Result<(), AudioError> {
+impl PipewireRecorder {
+    fn begin(&mut self, device: DeviceSelection, tap: Option<SampleTap>) -> Result<(), AudioError> {
         if self.recording {
             return Err(AudioError::AlreadyRecording);
         }
@@ -60,6 +56,7 @@ impl Recorder for PipewireRecorder {
             recorder: self.id,
             selection: device,
             app: self.app.clone(),
+            tap,
             reply,
         })?;
         match result.recv_timeout(START_TIMEOUT) {
@@ -75,6 +72,20 @@ impl Recorder for PipewireRecorder {
                 ))
             }
         }
+    }
+}
+
+impl Recorder for PipewireRecorder {
+    fn set_app_handle(&mut self, app: AppHandle) {
+        self.app = Some(app);
+    }
+
+    fn start(&mut self, device: DeviceSelection) -> Result<(), AudioError> {
+        self.begin(device, None)
+    }
+
+    fn start_with_tap(&mut self, device: DeviceSelection, tap: SampleTap) -> Result<(), AudioError> {
+        self.begin(device, Some(tap))
     }
 
     fn stop(&mut self) -> Result<Vec<u8>, AudioError> {
@@ -152,6 +163,7 @@ impl Capture {
         target: Option<NodeInfo>,
         sink_generation: Option<u64>,
         app: Option<AppHandle>,
+        tap: Option<SampleTap>,
     ) -> Result<Self, AudioError> {
         let failed = |e: pw::Error| AudioError::DeviceError(format!("PipeWire capture: {e}"));
         let mut props = pw::properties::PropertiesBox::new();
@@ -212,6 +224,7 @@ impl Capture {
             })
             .process({
                 let data = data.clone();
+                let tap = tap;
                 move |stream, _| {
                     let Some(mut buffer) = stream.dequeue_buffer() else {
                         return;
@@ -223,7 +236,12 @@ impl Capture {
                     let size = chunk.chunk().size() as usize;
                     if let Some(bytes) = chunk.data() {
                         let end = offset.saturating_add(size).min(bytes.len());
-                        data.borrow_mut().push(&bytes[offset.min(end)..end]);
+                        // The borrow ends before the tap runs, so a tap that reaches
+                        // back into this capture cannot hit a double borrow.
+                        let appended = data.borrow_mut().push(&bytes[offset.min(end)..end]);
+                        if let (Some(tap), false) = (&tap, appended.is_empty()) {
+                            tap(&appended);
+                        }
                     }
                 }
             })
@@ -302,10 +320,11 @@ impl CaptureData {
     }
 
     /// Same order as the Windows capture loop: mono at the device rate feeds the
-    /// waveform, the 16 kHz resample feeds the recording.
-    fn push(&mut self, bytes: &[u8]) {
+    /// waveform, the 16 kHz resample feeds the recording. Returns what was appended to
+    /// the recording, loopback gap padding included, for the live tap.
+    fn push(&mut self, bytes: &[u8]) -> Vec<i16> {
         if self.error.is_some() || self.channels == 0 || self.rate == 0 {
-            return;
+            return Vec::new();
         }
         let frames: Vec<f32> = bytes
             .as_chunks::<4>()
@@ -315,11 +334,12 @@ impl CaptureData {
             .collect();
         let samples = to_mono_i16_f32(&frames, self.channels);
         if samples.is_empty() {
-            return;
+            return Vec::new();
         }
         let resampled =
             (self.rate != SAMPLE_RATE).then(|| resample(&samples, self.rate, SAMPLE_RATE));
         let resampled = resampled.as_deref().unwrap_or(&samples);
+        let appended_from = self.samples.len();
         if self.loopback {
             let start = elapsed_samples(self.started).saturating_sub(resampled.len());
             if start > self.samples.len() + LOOPBACK_GAP_TOLERANCE {
@@ -331,6 +351,7 @@ impl CaptureData {
         if let (Some(bars), Some(app)) = (bars, &self.app) {
             emit_waveform(app, bars);
         }
+        self.samples[appended_from..].to_vec()
     }
 }
 
@@ -389,5 +410,15 @@ mod tests {
         data.fail(on_node_removed("a", "a").unwrap());
         data.push(&bytes(&[0.1; 160]));
         assert_eq!(data.samples.len(), 160);
+    }
+
+    #[test]
+    fn push_returns_what_was_appended_including_loopback_padding() {
+        let mut data = capture_data(16000, 1);
+        data.loopback = true;
+        data.started = Instant::now() - Duration::from_secs(2);
+        let appended = data.push(&bytes(&[0.1; 160]));
+        assert_eq!(appended.len(), data.samples.len());
+        assert!(appended.len() > 160);
     }
 }
