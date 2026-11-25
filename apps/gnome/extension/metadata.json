@@ -2,5 +2,5 @@
   "uuid": "dictto@dictto.app",
   "name": "Dictto",
   "description": "Panel indicator, recording overlay and clipboard access for the Dictto voice dictation daemon.",
-  "shell-version": ["47", "48", "49"]
+  "shell-version": ["47", "48", "49", "51"]
 }

@@ -34,9 +34,11 @@ For development builds: `cargo build -p dictto-gnome -p dictto-gnome-settings` a
 - D-Bus: `dbus-monitor --session "sender=com.dictto.App"` and `gdbus introspect --session --dest com.dictto.App --object-path /com/dictto/App`
 - Extension syntax check: `apps/gnome/extension/check.sh`; unit tests: `apps/gnome/extension/test.js` (gjs).
 
-## Never run on real GNOME
+## Fedora 45 bring-up status
 
-All of Tasks 2-9 beyond unit tests: logind session tracking and LockedHint, the uinput keyboard grab and virtual keyboard, PipeWire capture/devices/sounds/virtual microphone, AT-SPI selection reads, the Shell extension (indicator, overlay, St.Clipboard), the D-Bus services, and the libadwaita settings window.
+- The owner’s desktop runs GNOME Shell 51.1 on Wayland with an active logind session and a working PipeWire connection. Shell extension version validation is enabled, so the extension metadata includes GNOME 51.
+- The extension syntax, import, D-Bus XML and icon checks pass on Fedora 45. All 21 GJS tests pass.
+- The build and live desktop checklist below are pending. The build dependencies need to be installed from a terminal that can run `sudo`. The session used for the initial checks had `NoNewPrivs` set and could not elevate. Before input setup, the user lacked the `input` group and `/dev/uinput` was accessible only to root.
 
 ## Checklist (in this order)
 

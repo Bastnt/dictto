@@ -14,7 +14,7 @@ jq -e '
   .uuid == "dictto@dictto.app"
   and (.name | type == "string" and length > 0)
   and (.description | type == "string" and length > 0)
-  and .["shell-version"] == ["47", "48", "49"]
+  and .["shell-version"] == ["47", "48", "49", "51"]
 ' metadata.json >/dev/null || fail "metadata.json: uuid, name, description or shell-version"
 
 work=$(mktemp -d)

@@ -1,6 +1,6 @@
 # Dictto GNOME Shell extension
 
-UI half of `dictto-gnome` on GNOME 47-49: panel indicator, recording pill and the
+UI half of `dictto-gnome` on GNOME 47–49 and 51: panel indicator, recording pill and the
 `com.dictto.Shell1` clipboard service. It holds no business logic; everything goes
 through the daemon over D-Bus (`../dbus/*.xml`).
 
