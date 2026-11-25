@@ -47,10 +47,10 @@ For development builds: `cargo build -p dictto-gnome -p dictto-gnome-settings` a
 - The owner’s desktop runs GNOME Shell 51.1 on Wayland with an active logind session and a working PipeWire connection. Shell extension version validation is enabled, so the extension metadata includes GNOME 51.
 - The extension syntax, import, D-Bus XML and icon checks pass on Fedora 45. All 21 GJS tests pass.
 - The release build and installation completed on Fedora 45. Both installed binaries match the release artifacts, and the installed extension metadata matches the checkout.
-- The installer added the user to the `input` group and set `/dev/uinput` to mode `0660` with group `input`. The first GNOME relogin discovered the extension, but its surviving user manager and the new Shell still had the old groups.
-- GNOME Shell 51 rejected the overlay's `affectsInputRegion` chrome argument. The extension no longer passes it, and the corrected module is installed. Loading it in a fresh Shell is pending.
-- The real daemon registered `com.dictto.App`, connected to PipeWire, followed the active logind session and opened Settings. D-Bus reported the keyboard permission failure while the user manager lacked the group. Hotkeys, dictation, paste and the rest of the live checklist are pending.
-- While Dictto was idle, PipeWire showed the built-in microphone as the default and no capture streams. After D-Bus `Quit`, the Dictto virtual source disappeared and the built-in microphone remained the default.
+- The installer added the user to the `input` group and set `/dev/uinput` to mode `0660` with group `input`. The surviving user manager kept its old groups after the first relogin. A reboot refreshed the daemon's groups, and it detected one keyboard.
+- GNOME Shell 51 rejected the overlay's `affectsInputRegion` chrome argument. The corrected extension is active after reboot, the panel icon is visible and the Shell clipboard D-Bus service is registered.
+- The daemon registered `com.dictto.App`, connected to PipeWire, followed the active logind session and opened Settings. After reboot the D-Bus Status was `ok`. An idle sample showed 17,116 KiB RSS, seven threads and zero libgtk mappings. With Settings open, its process showed 103,232 KiB RSS.
+- With the Dictto virtual source present, Codex dictation stalled. PipeWire still showed the built-in mic as the default and logged a Chromium input stream timeout. Turning off **Voice → Send speech to Dictto Microphone** removed the virtual source. Codex then transcribed while Dictto stayed running. The failed capture's target and the exact cause remain unknown. Speech routing with the virtual source is pending.
 - The Settings launcher now matches the GTK application ID (`com.dictto.Settings`). The installed desktop entry resolves to the Dictto name and icon. Visual confirmation in Alt+Tab is pending.
 
 ## Checklist (in this order)
