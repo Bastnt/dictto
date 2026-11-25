@@ -170,7 +170,7 @@ fn open_settings() {
         Ok(command) => command,
         Err(error) => return log::error!("{error}"),
     };
-    match command.spawn() {
+    match command.arg("--from-daemon").spawn() {
         // Reaped on its own thread so it never lingers as a zombie.
         Ok(mut child) => {
             let _ = std::thread::Builder::new()

@@ -33,10 +33,18 @@ type Pending = Option<Pin<Box<dyn Future<Output = ()>>>>;
 pub(crate) fn run() -> glib::ExitCode {
     let mut args = std::env::args().skip(1);
     let mut screenshots = None;
+    let mut from_daemon = false;
     while let Some(arg) = args.next() {
-        match (arg.as_str(), args.next()) {
+        match arg.as_str() {
             // Development aid: saves each page as PNG and quits.
-            ("--screenshot", Some(dir)) => screenshots = Some(PathBuf::from(dir)),
+            "--screenshot" => {
+                let Some(dir) = args.next() else {
+                    eprintln!("dictto-gnome-settings: --screenshot needs a directory");
+                    return glib::ExitCode::from(2);
+                };
+                screenshots = Some(PathBuf::from(dir));
+            }
+            "--from-daemon" => from_daemon = true,
             _ => {
                 eprintln!("dictto-gnome-settings: unknown argument: {arg}");
                 return glib::ExitCode::from(2);
@@ -52,7 +60,7 @@ pub(crate) fn run() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).flags(flags).build();
     app.connect_activate(move |app| match app.active_window() {
         Some(window) => window.present(),
-        None => Ui::build(app, screenshots.clone()),
+        None => Ui::build(app, screenshots.clone(), from_daemon),
     });
     app.run_with_args::<&str>(&[])
 }
@@ -93,7 +101,7 @@ pub(super) struct Ui {
 }
 
 impl Ui {
-    fn build(app: &adw::Application, screenshots: Option<PathBuf>) {
+    fn build(app: &adw::Application, screenshots: Option<PathBuf>, from_daemon: bool) {
         let (general, dictation, voice, shortcuts, connection) = (
             general::Page::new(),
             dictation::Page::new(),
@@ -185,7 +193,7 @@ impl Ui {
         connection::connect(&ui);
         ui.connect_window();
         ui.window.present();
-        spawn(ui.clone().follow_daemon());
+        spawn(ui.clone().follow_daemon(from_daemon));
     }
 
     fn connect_window(self: &Rc<Self>) {
@@ -326,7 +334,7 @@ impl Ui {
         self.autoload();
     }
 
-    async fn follow_daemon(self: Rc<Self>) {
+    async fn follow_daemon(self: Rc<Self>, from_daemon: bool) {
         let (client, mut incoming) = match Client::connect().await {
             Ok(connected) => connected,
             Err(error) => {
@@ -343,6 +351,11 @@ impl Ui {
             }
             match message {
                 Incoming::Present(true) => spawn(self.clone().load(self.presence.get())),
+                // Quit can precede the new window's signal subscription.
+                Incoming::Present(false) if from_daemon => {
+                    self.window.close();
+                    return;
+                }
                 Incoming::Present(false) => {
                     self.show_absent();
                     if self.first_presence.replace(false) {
